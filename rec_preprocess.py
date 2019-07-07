@@ -11,25 +11,43 @@ def parse_record(file_path, user_in, item_in, T, NU, NI, user_out, item_out, dat
     urecords = []
     for line in lines:
         urecords.append(json.loads(line))
-
-    for record in urecords:
-        user = record['user']
-        for t in range(T):
-            ut = user[t]  # 第t月与user有交互的item list
-            for idx, ut_i in enumerate(ut):
-                ut[idx] = t * NI + ut_i  # 按第t月寻找组 按id偏移
+    for uid, record in enumerate(urecords):
+        uid = str(uid + 1)
+        u_len = len(record[uid])
+        if u_len >= T:
+            record[uid] = record[uid][:T]
+            u_len = T
+        else:
+            for i in range(T - u_len):
+                record[uid].append([0])
+        for t in range(u_len):
+            # record[uid][t] 第t月与user有交互的item list
+            for idx, ut_i in enumerate(record[uid][t]):
+                record[uid][t][idx] = t * NI + ut_i  # 按第t月寻找组 按id偏移
+        if len(record[uid]) != 20:
+            print(uid)
 
     item_path = os.path.join(file_path, item_in)
     lines = open(item_path, 'r').readlines()
     irecords = []
     for line in lines:
         irecords.append(json.loads(line))
-    for record in irecords:
-        item = record['item']
-        for t in range(T):
-            it = item[t]
-            for idx, it_u in enumerate(it):
-                it[idx] = t * NU + it_u
+    for iid, record in enumerate(irecords):
+        iid = str(iid + 1)
+        i_len = len(record[iid])
+        if iid == 1846:
+            print(iid)
+        if i_len >= T:
+            record[iid] = record[iid][:T]
+            i_len = T
+        else:
+            for i in range(T - i_len):
+                record[iid].append([0])
+        for t in range(i_len):
+            for idx, it_u in enumerate(record[iid][t]):
+                record[iid][t][idx] = t * NU + it_u
+        if len(record[iid]) != 20:
+            print(iid)
 
     with open(user_out, 'wb') as fo:
         pkl.dump(urecords, fo)

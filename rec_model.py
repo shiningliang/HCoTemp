@@ -55,6 +55,10 @@ class COTEMP(nn.Module):
         item_masks = torch.sum(item_masks, dim=-1, keepdim=True)
         user_masks = user_masks.repeat(1, self.n_emb).float()
         item_masks = item_masks.repeat(1, self.n_emb).float()
+
+        user_masks = torch.where(user_masks == 0, torch.full_like(user_masks, 1e-10), user_masks)
+        item_masks = torch.where(item_masks == 0, torch.full_like(item_masks, 1e-10), item_masks)
+
         user_avgs = torch.div(urecords_embs, user_masks)
         item_avgs = torch.div(irecords_embs, item_masks)
         user_avgs = self.emb_dropout(user_avgs)

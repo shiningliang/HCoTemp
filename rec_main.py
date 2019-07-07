@@ -45,21 +45,21 @@ def parse_args():
                                 help='gradient clip, -1 means no clip (default: 0.35)')
     train_settings.add_argument('--weight_decay', type=float, default=0.0003,
                                 help='weight decay')
-    train_settings.add_argument('--emb_dropout', type=float, default=0.3,
+    train_settings.add_argument('--emb_dropout', type=float, default=0.5,
                                 help='dropout keep rate')
-    train_settings.add_argument('--layer_dropout', type=float, default=0.3,
+    train_settings.add_argument('--layer_dropout', type=float, default=0.5,
                                 help='dropout keep rate')
-    train_settings.add_argument('--batch_train', type=int, default=2,
+    train_settings.add_argument('--batch_train', type=int, default=32,
                                 help='train batch size')
-    train_settings.add_argument('--batch_eval', type=int, default=2,
+    train_settings.add_argument('--batch_eval', type=int, default=32,
                                 help='dev batch size')
-    train_settings.add_argument('--epochs', type=int, default=2,
+    train_settings.add_argument('--epochs', type=int, default=50,
                                 help='train epochs')
     train_settings.add_argument('--optim', default='Adam',
                                 help='optimizer type')
     train_settings.add_argument('--patience', type=int, default=2,
                                 help='num of epochs for train patients')
-    train_settings.add_argument('--period', type=int, default=1000,
+    train_settings.add_argument('--period', type=int, default=50,
                                 help='period to save batch loss')
     train_settings.add_argument('--num_threads', type=int, default=8,
                                 help='Number of threads in input pipeline')
@@ -67,11 +67,11 @@ def parse_args():
     model_settings = parser.add_argument_group('model settings')
     model_settings.add_argument('--max_len', type=int, default=3,
                                 help='max record length in a year')
-    model_settings.add_argument('--T', type=int, default=2,
+    model_settings.add_argument('--T', type=int, default=20,
                                 help='length of the year sequence')
-    model_settings.add_argument('--NU', type=int, default=5,
+    model_settings.add_argument('--NU', type=int, default=936,
                                 help='num of users')
-    model_settings.add_argument('--NI', type=int, default=5,
+    model_settings.add_argument('--NI', type=int, default=2049,
                                 help='num of items')
     model_settings.add_argument('--NF', type=int, default=32,
                                 help='num of factors')
@@ -103,19 +103,19 @@ def parse_args():
                                 help='top-K max pooling')
 
     path_settings = parser.add_argument_group('path settings')
-    path_settings.add_argument('--task', default='training',
+    path_settings.add_argument('--task', default='dvd',
                                help='the task name')
     path_settings.add_argument('--model', default='COTEMP',
                                help='the model name')
-    path_settings.add_argument('--user_record_file', default='user_record_demo.json',
+    path_settings.add_argument('--user_record_file', default='user_record.json',
                                help='the record file name')
-    path_settings.add_argument('--item_record_file', default='item_record_demo.json',
+    path_settings.add_argument('--item_record_file', default='item_record.json',
                                help='the record file name')
-    path_settings.add_argument('--train_file', default='train_demo.csv',
+    path_settings.add_argument('--train_file', default='train.csv',
                                help='the train file name')
-    path_settings.add_argument('--valid_file', default='valid_demo.csv',
+    path_settings.add_argument('--valid_file', default='dev.csv',
                                help='the valid file name')
-    path_settings.add_argument('--test_file', default='test_demo.csv',
+    path_settings.add_argument('--test_file', default='test.csv',
                                help='the test file name')
     path_settings.add_argument('--raw_dir', default='data/raw_data/',
                                help='the dir to store raw data')

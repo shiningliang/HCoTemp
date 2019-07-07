@@ -14,19 +14,23 @@ def get_batch(uids, iids, labels, user_records, item_records, device):
     uids = np.asarray(uids, dtype=np.int64)
     iids = np.asarray(iids, dtype=np.int64)
 
-    raw_uids = uids[:, 0] - 1
-    raw_iids = iids[:, 0] - 1
+    raw_uids = uids[:, 0]
+    raw_iids = iids[:, 0]
 
     u_records, i_records = [], []
     u_maxlen = 0
     i_maxlen = 0
     for uid, iid in zip(raw_uids, raw_iids):
-        urec = user_records[uid]['user']
+        urec = user_records[uid - 1][str(uid)]
+        if len(urec) > 20:
+            print(uid)
         u_records.append(urec)
         tmp_len = max((len(r) for r in urec))
         u_maxlen = tmp_len if tmp_len > u_maxlen else u_maxlen
 
-        irec = item_records[iid]['item']
+        irec = item_records[iid - 1][str(iid)]
+        if len(irec) > 20:
+            print(iid)
         i_records.append(irec)
         tmp_len = max((len(r) for r in irec))
         i_maxlen = tmp_len if tmp_len > i_maxlen else i_maxlen
@@ -34,6 +38,7 @@ def get_batch(uids, iids, labels, user_records, item_records, device):
     u_records = list(list(map(lambda l: l + [0] * (u_maxlen - len(l)), records)) for records in u_records)
     i_records = list(list(map(lambda l: l + [0] * (i_maxlen - len(l)), records)) for records in i_records)
     u_records = np.asarray(u_records, dtype=np.int64)
+
     i_records = np.asarray(i_records, dtype=np.int64)
     labels = np.asarray(labels, np.int64)
 
