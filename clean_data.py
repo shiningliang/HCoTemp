@@ -25,13 +25,16 @@ def get_records(group, sort_id):
         sid = group.iloc[0, 1]
     else:
         sid = group.iloc[0, 0]
-    months = []
+    months, ratings = [], []
     j_year = group.groupby('year')
-    for yi, yj in j_year:
+    for _, yj in j_year:
         j_month = yj.groupby('month')
-        for mi, mj in j_month:
-            months.append(mj[sort_id].tolist())
-    return sid, months
+        for _, mj in j_month:
+            id_list = mj[sort_id].tolist()
+            months.append(id_list)
+            rating_list = mj['rating'].tolist()
+            ratings.append({k: v for k, v in zip(id_list, rating_list)})
+    return sid, months, ratings
 
 
 def stat_len(samples, sample_type):
@@ -68,35 +71,6 @@ def show_len(seq, seq_type):
     plt.savefig("./" + seq_type + ".jpg", format='jpg')
 
 
-def remove(samples, remove_list):
-    old_item = samples.keys()
-    for sid, month in samples.items():
-        samples[sid] = []
-        for rec in month:
-            rec = list(set(rec) - set(remove_list))
-            if len(rec) > 0:
-                samples[sid].append(rec)
-    samples = {k: v for k, v in samples.items() if len(v) >= 4}
-    remove_new = list(set(old_item) - set(samples.keys()))
-
-    return samples, remove_new
-
-
-def clean_low_len(u_samples, i_samples):
-    old_user = u_samples.keys()
-    u_samples = {k: v for k, v in u_samples.items() if len(v) >= 4}
-    u_remove = list(set(old_user) - set(u_samples.keys()))
-
-    while len(u_remove) > 0:
-        i_samples, i_remove = remove(i_samples, u_remove)
-        u_samples, u_remove = remove(u_samples, i_remove)
-
-    print('Num of filtered users - {}'.format(len(u_samples)))
-    print('Num of filtered items - {}'.format(len(i_samples)))
-
-    return u_samples, i_samples
-
-
 def read_file(file_path):
     raw_table = pd.read_csv(file_path, sep=',', header=None,
                             names=['userID', 'movieID', 'catID', 'reviewID', 'rating', 'date'])
@@ -123,7 +97,9 @@ def read_file(file_path):
     pool.close()
     pool.join()
     item_records = {res.get()[0]: res.get()[1] for res in results}
+    item_ratings = {res.get()[0]: res.get()[2] for res in results}
     item_records = dict(sorted(item_records.items(), key=lambda x: x[0]))
+    item_ratings = dict(sorted(item_ratings.items(), key=lambda x: x[0]))
 
     pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
     results = []
@@ -132,29 +108,75 @@ def read_file(file_path):
     pool.close()
     pool.join()
     user_records = {res.get()[0]: res.get()[1] for res in results}
+    user_ratings = {res.get()[0]: res.get()[2] for res in results}
 
-    return user_records, item_records
+    return user_records, user_ratings, item_records, item_ratings
 
 
-def filer_records(u_recs, i_recs):
-    u_samples, i_samples = clean_low_len(u_recs, i_recs)
+def remove(samples, ratings, remove_list):
+    old_item = samples.keys()
+    for sid, month in samples.items():
+        samples[sid] = []
+        scores = ratings[sid]
+        ratings[sid] = []
+        for idx, rec in enumerate(month):
+            ids = set(rec).intersection(set(remove_list))
+            rec = list(set(rec).difference(ids))
+            for id in ids:
+                scores[idx].pop(id)
+            if len(rec) > 0:
+                samples[sid].append(rec)
+            if len(scores[idx]) > 0:
+                ratings[sid].append(scores[idx])
+    samples = {k: v for k, v in samples.items() if len(v) >= 4}
+    ratings = {k: v for k, v in ratings.items() if len(v) >= 4}
+    remove_new = list(set(old_item) - set(samples.keys()))
+
+    return samples, ratings, remove_new
+
+
+def clean_low_len(u_samples, i_samples, u_ratings, i_ratings):
+    old_user = u_samples.keys()
+    u_samples = {k: v for k, v in u_samples.items() if len(v) >= 4}
+    u_remove = list(set(old_user) - set(u_samples.keys()))
+
+    while len(u_remove) > 0:
+        i_samples, i_ratings, i_remove = remove(i_samples, i_ratings, u_remove)
+        u_samples, u_ratings, u_remove = remove(u_samples, u_ratings, i_remove)
+
+    print('Num of filtered users - {}'.format(len(u_samples)))
+    print('Num of filtered items - {}'.format(len(i_samples)))
+
+    return u_samples, i_samples, u_ratings, i_ratings
+
+
+def filer_records(u_recs, i_recs, u_ratings, i_ratings):
+    u_samples, i_samples, u_ratings, i_ratings = clean_low_len(u_recs, i_recs, u_ratings, i_ratings)
 
     u_list = list(u_samples.keys())
     u_map = {uid: idx + 1 for idx, uid in enumerate(u_list)}
     i_list = list(i_samples.keys())
     i_map = {iid: idx + 1 for idx, iid in enumerate(i_list)}
 
-    u_sort = {u_map[k]: [[i_map[rec] for rec in month] for month in v] for k, v in u_samples.items()}
-    i_sort = {i_map[k]: [[u_map[rec] for rec in month] for month in v] for k, v in i_samples.items()}
+    u_rec_sort = {u_map[k]: [[i_map[rec] for rec in month] for month in v] for k, v in u_samples.items()}
+    u_rat_sort = {u_map[k]: [list(rating.values()) for rating in v] for k, v in u_ratings.items()}
+    i_rec_sort = {i_map[k]: [[u_map[rec] for rec in month] for month in v] for k, v in i_samples.items()}
+    i_rat_sort = {i_map[k]: [list(rating.values()) for rating in v] for k, v in i_ratings.items()}
 
-    stat_len(u_sort, 'user')
-    stat_len(i_sort, 'item')
+    stat_len(u_rec_sort, 'user')
+    stat_len(i_rec_sort, 'item')
 
-    with open('u_sort.pkl', 'wb') as fu:
-        pkl.dump(u_sort, fu)
+    with open('u_rec_sort.pkl', 'wb') as fu:
+        pkl.dump(u_rec_sort, fu)
     fu.close()
-    with open('i_sort.pkl', 'wb') as fi:
-        pkl.dump(i_sort, fi)
+    with open('i_rec_sort.pkl', 'wb') as fi:
+        pkl.dump(i_rec_sort, fi)
+    fi.close()
+    with open('u_rat_sort.pkl', 'wb') as fu:
+        pkl.dump(u_rat_sort, fu)
+    fu.close()
+    with open('i_rat_sort.pkl', 'wb') as fi:
+        pkl.dump(i_rat_sort, fi)
     fi.close()
 
 
@@ -173,23 +195,29 @@ def remove_uid_in_irecs(recs, uid):
 
 if __name__ == '__main__':
     path = './data/raw_data/movie-ratings.txt'
-    user_records, item_records = read_file(path)
-    filer_records(user_records, item_records)
+    # user_records, user_ratings, item_records, item_ratings = read_file(path)
+    # filer_records(user_records, item_records, user_ratings, item_ratings)
 
     # stat_len(user_records, 'user')
     # stat_len(item_records, 'item')
 
-    with open('u_sort.pkl', 'rb') as fu:
+    with open('u_rec_sort.pkl', 'rb') as fu:
         u_recs = pkl.load(fu)
     fu.close()
-    with open('i_sort.pkl', 'rb') as fi:
+    with open('i_rec_sort.pkl', 'rb') as fi:
         i_recs = pkl.load(fi)
+    fi.close()
+    with open('u_rat_sort.pkl', 'rb') as fu:
+        u_rats = pkl.load(fu)
+    fu.close()
+    with open('i_rat_sort.pkl', 'rb') as fi:
+        i_rats = pkl.load(fi)
     fi.close()
 
     num_user = len(u_recs)
     user_list = set([x for x in range(num_user)])
     num_item = len(i_recs)
-    item_list = set([y for y in range(num_item)])
+    item_list = set([y for y in range(1, num_item + 1)])
 
     train_uids, train_iids, train_labels = [], [], []
     dev_uids, dev_iids, dev_labels = [], [], []
@@ -200,13 +228,16 @@ if __name__ == '__main__':
         num_test = len(v[-1])
         train_uids.extend([uid] * num_train)
         train_iids.extend(v[-3])
-        train_labels.extend([1] * num_train)
+        # train_labels.extend([1] * num_train)
+        train_labels.extend(u_rats[uid][-3] * 0.2)
         dev_uids.extend([uid] * num_dev)
         dev_iids.extend(v[-2])
-        dev_labels.extend([1] * num_dev)
+        # dev_labels.extend([1] * num_dev)
+        dev_labels.extend(u_rats[uid][-2] * 0.2)
         test_uids.extend([uid] * num_test)
         test_iids.extend(v[-1])
-        test_labels.extend([1] * num_test)
+        # test_labels.extend([1] * num_test)
+        test_labels.extend(u_rats[uid][-1] * 0.2)
 
         for iid in v[-1]:
             remove_uid_in_irecs(i_recs[iid], uid)
