@@ -22,7 +22,8 @@ class COTEMP(nn.Module):
                                    bidirectional=True)
         self.item_encoder = nn.GRU(2 * self.n_emb, n_hidden, n_layer, dropout=dropout['layer'], batch_first=True,
                                    bidirectional=True)
-        self.out_fc = nn.Linear(4 * n_hidden, output_size)
+        self.out_fc = nn.Linear(4 * n_hidden, 1)
+        self.out_sig = nn.Sigmoid()
 
         self._init_weights(u_emb, i_emb)
         logger.info('Time to build graph: {} s'.format(time() - start_t))
@@ -79,4 +80,5 @@ class COTEMP(nn.Module):
         iforward_state, ibackward_state = istate[-1][0], istate[-1][1]
         i_final = torch.cat([iforward_state, ibackward_state], dim=1)
         y_final = torch.cat([u_final, i_final], dim=1)
-        return self.out_fc(y_final)
+        y_final = self.out_fc(y_final)
+        return self.out_sig(y_final)

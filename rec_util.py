@@ -40,7 +40,7 @@ def get_batch(uids, iids, labels, user_records, item_records, device):
     u_records = np.asarray(u_records, dtype=np.int64)
 
     i_records = np.asarray(i_records, dtype=np.int64)
-    labels = np.asarray(labels, np.int64)
+    labels = np.asarray(labels, np.float32)
 
     return torch.from_numpy(u_records).to(device), torch.from_numpy(i_records).to(device), \
            torch.from_numpy(uids).to(device), torch.from_numpy(iids).to(device), torch.from_numpy(labels).to(device)
@@ -61,8 +61,9 @@ def train_one_epoch(model, optimizer, train_num, train_file, user_records, item_
 
         optimizer.zero_grad()
         outputs = model(b_user_records, b_item_records, b_uids, b_iids)
-        criterion = torch.nn.CrossEntropyLoss()
-        loss = criterion(outputs, b_labels)
+        # criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.MSELoss()
+        loss = criterion(outputs, b_labels.reshape(b_labels.shape[0], 1))
         loss.backward()
         if args.clip > 0:
             # 梯度裁剪，输入是(NN参数，最大梯度范数，范数类型=2)，一般默认为L2范数
@@ -79,7 +80,7 @@ def train_one_epoch(model, optimizer, train_num, train_file, user_records, item_
     return avg_train_loss
 
 
-def valid_batch(model, data_num, batch_size, valid_file, user_records, item_records, device, data_type, logger):
+def valid_batch(model, data_num, batch_size, valid_file, user_records, item_records, device):
     losses = []
     fp, fn = [], []
     preds, scores, labels = [], [], []
@@ -96,15 +97,16 @@ def valid_batch(model, data_num, batch_size, valid_file, user_records, item_reco
         rec_outputs = model(b_user_records, b_item_records, b_uids, b_iids)
         rec_outputs = rec_outputs.detach()
 
-        criterion = torch.nn.CrossEntropyLoss()
-        loss = criterion(rec_outputs, b_labels)
+        # criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.MSELoss()
+        loss = criterion(rec_outputs, b_labels.reshape(b_labels.shape[0], 1))
         losses.append(loss.item())
-        rec_preds = torch.max(rec_outputs.cpu(), 1)[1].numpy()
-        rec_scores = rec_outputs.cpu()[:, 1].numpy()
-        b_labels = b_labels.cpu().numpy()
-        preds += rec_preds.tolist()
-        scores += rec_scores.tolist()
-        labels += b_labels.tolist()
+        # rec_preds = torch.max(rec_outputs.cpu(), 1)[1].numpy()
+        # rec_scores = rec_outputs.cpu()[:, 1].numpy()
+        # b_labels = b_labels.cpu().numpy()
+        # preds += rec_preds.tolist()
+        # scores += rec_scores.tolist()
+        # labels += b_labels.tolist()
         # if data_type == 'valid' or data_type == 'test':
         #     for pred, label, eid in zip(rec_preds, b_labels, eids):
         #         if label == 1 and pred == 0:
@@ -112,18 +114,19 @@ def valid_batch(model, data_num, batch_size, valid_file, user_records, item_reco
         #         if label == 0 and pred == 1:
         #             fp.append(eid)
 
-    metrics['loss'] = np.mean(losses)
-    metrics['acc'] = accuracy_score(labels, preds)
-    metrics['precision'] = precision_score(labels, preds)
-    metrics['recall'] = recall_score(labels, preds)
-    metrics['f1'] = f1_score(labels, preds)
-    fpr, tpr, _ = roc_curve(labels, scores)
-    (precisions, recalls, _) = precision_recall_curve(labels, scores)
-    metrics['auc_roc'] = auc(fpr, tpr)
-    metrics['auc_prc'] = auc(recalls, precisions)
-    if data_type == 'valid' or data_type == 'test':
-        metrics['fp'] = fp
-        metrics['fn'] = fn
-    logger.info('Full confusion matrix')
-    logger.info(confusion_matrix(labels, preds))
-    return metrics, fpr, tpr, precisions, recalls
+    return np.mean(losses)
+    # metrics['loss'] = np.mean(losses)
+    # metrics['acc'] = accuracy_score(labels, preds)
+    # metrics['precision'] = precision_score(labels, preds)
+    # metrics['recall'] = recall_score(labels, preds)
+    # metrics['f1'] = f1_score(labels, preds)
+    # fpr, tpr, _ = roc_curve(labels, scores)
+    # (precisions, recalls, _) = precision_recall_curve(labels, scores)
+    # metrics['auc_roc'] = auc(fpr, tpr)
+    # metrics['auc_prc'] = auc(recalls, precisions)
+    # if data_type == 'valid' or data_type == 'test':
+    #     metrics['fp'] = fp
+    #     metrics['fn'] = fn
+    # logger.info('Full confusion matrix')
+    # logger.info(confusion_matrix(labels, preds))
+    # return metrics, fpr, tpr, precisions, recalls

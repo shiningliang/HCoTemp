@@ -11,6 +11,7 @@ from rec_model import COTEMP
 from rec_preprocess import run_prepare
 from rec_util import train_one_epoch, valid_batch
 
+
 # records = [{"user": [[1, 3, 5], [2, 3, 4]], "item": [[2, 3, 4], [1, 2, 5]]},
 #            {"user": [[1, 2, 4], [3, 4, 5]], "item": [[2, 4, 5], [1, 2, 3]]}]
 #
@@ -53,7 +54,7 @@ def parse_args():
                                 help='train batch size')
     train_settings.add_argument('--batch_eval', type=int, default=32,
                                 help='dev batch size')
-    train_settings.add_argument('--epochs', type=int, default=50,
+    train_settings.add_argument('--epochs', type=int, default=10,
                                 help='train epochs')
     train_settings.add_argument('--optim', default='Adam',
                                 help='optimizer type')
@@ -168,45 +169,51 @@ def train(args, file_paths):
                    logger).to(device=args.device)
     lr = args.lr
     optimizer = getattr(optim, args.optim)(model.parameters(), lr=lr, weight_decay=args.weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', 0.5, patience=args.patience, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 0.5, patience=args.patience, verbose=True)
 
-    max_acc, max_p, max_r, max_f, max_sum, max_epoch = 0, 0, 0, 0, 0, 0
-    FALSE = {}
-    ROC = {}
-    PRC = {}
+    # max_acc, max_p, max_r, max_f, max_sum, max_epoch = 0, 0, 0, 0, 0, 0
+    # FALSE = {}
+    # ROC = {}
+    # PRC = {}
+    min_loss, min_epoch = 1e10, 0
     for ep in range(1, args.epochs + 1):
         logger.info('Training the model for epoch {}'.format(ep))
-        avg_loss = train_one_epoch(model, optimizer, train_num, train_file, user_record_file, item_record_file, args,
-                                   logger)
-        logger.info('Epoch {} AvgLoss {}'.format(ep, avg_loss))
+        train_loss = train_one_epoch(model, optimizer, train_num, train_file, user_record_file, item_record_file, args,
+                                     logger)
+        logger.info('Epoch {} MSE {}'.format(ep, train_loss))
 
         logger.info('Evaluating the model for epoch {}'.format(ep))
-        eval_metrics, fpr, tpr, precision, recall = valid_batch(model, valid_num, args.batch_eval, valid_file,
-                                                                user_record_file, item_record_file, args.device,
-                                                                'valid', logger)
-        logger.info('Valid Loss - {}'.format(eval_metrics['loss']))
-        logger.info('Valid Acc - {}'.format(eval_metrics['acc']))
-        logger.info('Valid Precision - {}'.format(eval_metrics['precision']))
-        logger.info('Valid Recall - {}'.format(eval_metrics['recall']))
-        logger.info('Valid F1 - {}'.format(eval_metrics['f1']))
-        logger.info('Valid AUCROC - {}'.format(eval_metrics['auc_roc']))
-        logger.info('Valid AUCPRC - {}'.format(eval_metrics['auc_prc']))
-        max_acc = max((eval_metrics['acc'], max_acc))
-        max_p = max(eval_metrics['precision'], max_p)
-        max_r = max(eval_metrics['recall'], max_r)
-        max_f = max(eval_metrics['f1'], max_f)
-        # valid_sum = eval_metrics['precision'] + eval_metrics['recall'] + eval_metrics['f1']
-        valid_sum = eval_metrics['auc_roc'] + eval_metrics['auc_prc']
-        if valid_sum > max_sum:
-            max_sum = valid_sum
-            max_epoch = ep
-            FALSE = {'FP': eval_metrics['fp'], 'FN': eval_metrics['fn']}
-            ROC = {'FPR': fpr, 'TPR': tpr}
-            PRC = {'PRECISION': precision, 'RECALL': recall}
+        # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, valid_num, args.batch_eval, valid_file,
+        #                                                         user_record_file, item_record_file, args.device,
+        #                                                         'valid', logger)
+        valid_loss = valid_batch(model, valid_num, args.batch_eval, valid_file, user_record_file, item_record_file,
+                                 args.device)
+        logger.info('Valid MSE - {}'.format(valid_loss))
+        # logger.info('Valid Loss - {}'.format(eval_metrics['loss']))
+        # logger.info('Valid Acc - {}'.format(eval_metrics['acc']))
+        # logger.info('Valid Precision - {}'.format(eval_metrics['precision']))
+        # logger.info('Valid Recall - {}'.format(eval_metrics['recall']))
+        # logger.info('Valid F1 - {}'.format(eval_metrics['f1']))
+        # logger.info('Valid AUCROC - {}'.format(eval_metrics['auc_roc']))
+        # logger.info('Valid AUCPRC - {}'.format(eval_metrics['auc_prc']))
+        # max_acc = max((eval_metrics['acc'], max_acc))
+        # max_p = max(eval_metrics['precision'], max_p)
+        # max_r = max(eval_metrics['recall'], max_r)
+        # max_f = max(eval_metrics['f1'], max_f)
+        # valid_sum = eval_metrics['auc_roc'] + eval_metrics['auc_prc']
+        # if valid_sum > max_sum:
+        #     max_sum = valid_sum
+        #     max_epoch = ep
+        #     FALSE = {'FP': eval_metrics['fp'], 'FN': eval_metrics['fn']}
+        #     ROC = {'FPR': fpr, 'TPR': tpr}
+        #     PRC = {'PRECISION': precision, 'RECALL': recall}
+        if valid_loss < min_loss:
+            min_loss = valid_loss
+            min_epoch = ep
             torch.save(model.state_dict(), os.path.join(args.model_dir, 'model.bin'))
 
-        scheduler.step(metrics=eval_metrics['f1'])
-
+        # scheduler.step(metrics=eval_metrics['f1'])
+        scheduler.step(valid_loss)
         randnum = random.randint(0, 1e8)
         random.seed(randnum)
         random.shuffle(train_file['uids'])
@@ -215,21 +222,23 @@ def train(args, file_paths):
         random.seed(randnum)
         random.shuffle(train_file['labels'])
 
-    logger.info('Max Acc - {}'.format(max_acc))
-    logger.info('Max Precision - {}'.format(max_p))
-    logger.info('Max Recall - {}'.format(max_r))
-    logger.info('Max F1 - {}'.format(max_f))
-    logger.info('Max Epoch - {}'.format(max_epoch))
-    logger.info('Max Sum - {}'.format(max_sum))
-    with open(os.path.join(args.result_dir, 'FALSE_valid.json'), 'w') as f:
-        f.write(json.dumps(FALSE) + '\n')
-    f.close()
-    with open(os.path.join(args.result_dir, 'ROC_valid.json'), 'w') as f:
-        f.write(json.dumps(ROC) + '\n')
-    f.close()
-    with open(os.path.join(args.result_dir, 'PRC_valid.json'), 'w') as f:
-        f.write(json.dumps(PRC) + '\n')
-    f.close()
+    # logger.info('Max Acc - {}'.format(max_acc))
+    # logger.info('Max Precision - {}'.format(max_p))
+    # logger.info('Max Recall - {}'.format(max_r))
+    # logger.info('Max F1 - {}'.format(max_f))
+    # logger.info('Max Epoch - {}'.format(max_epoch))
+    # logger.info('Max Sum - {}'.format(max_sum))
+    logger.info('Min MSE - {}'.format(min_loss))
+    logger.info('Min Epoch - {}'.format(min_epoch))
+    # with open(os.path.join(args.result_dir, 'FALSE_valid.json'), 'w') as f:
+    #     f.write(json.dumps(FALSE) + '\n')
+    # f.close()
+    # with open(os.path.join(args.result_dir, 'ROC_valid.json'), 'w') as f:
+    #     f.write(json.dumps(ROC) + '\n')
+    # f.close()
+    # with open(os.path.join(args.result_dir, 'PRC_valid.json'), 'w') as f:
+    #     f.write(json.dumps(PRC) + '\n')
+    # f.close()
 
 
 def test(args, file_paths):
@@ -262,30 +271,32 @@ def test(args, file_paths):
                    logger).to(device=args.device)
     model.load_state_dict(torch.load(os.path.join(args.model_dir, 'model.bin')))
 
-    eval_metrics, fpr, tpr, precision, recall = valid_batch(model, test_num, args.batch_eval, test_file,
-                                                            user_record_file, item_record_file, args.device,
-                                                            'test', logger)
-    logger.info('Test Loss - {}'.format(eval_metrics['loss']))
-    logger.info('Test Acc - {}'.format(eval_metrics['acc']))
-    logger.info('Test Precision - {}'.format(eval_metrics['precision']))
-    logger.info('Test Recall - {}'.format(eval_metrics['recall']))
-    logger.info('Test F1 - {}'.format(eval_metrics['f1']))
-    logger.info('Test AUCROC - {}'.format(eval_metrics['auc_roc']))
-    logger.info('Test AUCPRC - {}'.format(eval_metrics['auc_prc']))
+    # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, test_num, args.batch_eval, test_file,
+    #                                                         user_record_file, item_record_file, args.device,
+    #                                                         'test', logger)
+    test_loss = valid_batch(model, test_num, args.batch_eval, test_file, user_record_file, item_record_file,
+                            args.device)
+    logger.info('Test MSE - {}'.format(test_loss))
+    # logger.info('Test Acc - {}'.format(eval_metrics['acc']))
+    # logger.info('Test Precision - {}'.format(eval_metrics['precision']))
+    # logger.info('Test Recall - {}'.format(eval_metrics['recall']))
+    # logger.info('Test F1 - {}'.format(eval_metrics['f1']))
+    # logger.info('Test AUCROC - {}'.format(eval_metrics['auc_roc']))
+    # logger.info('Test AUCPRC - {}'.format(eval_metrics['auc_prc']))
 
-    FALSE = {'FP': eval_metrics['fp'], 'FN': eval_metrics['fn']}
-    ROC = {'FPR': fpr, 'TPR': tpr}
-    PRC = {'PRECISION': precision, 'RECALL': recall}
-
-    with open(os.path.join(args.result_dir, 'FALSE_test.json'), 'w') as f:
-        f.write(json.dumps(FALSE) + '\n')
-    f.close()
-    with open(os.path.join(args.result_dir, 'ROC_test.json'), 'w') as f:
-        f.write(json.dumps(ROC) + '\n')
-    f.close()
-    with open(os.path.join(args.result_dir, 'PRC_test.json'), 'w') as f:
-        f.write(json.dumps(PRC) + '\n')
-    f.close()
+    # FALSE = {'FP': eval_metrics['fp'], 'FN': eval_metrics['fn']}
+    # ROC = {'FPR': fpr, 'TPR': tpr}
+    # PRC = {'PRECISION': precision, 'RECALL': recall}
+    #
+    # with open(os.path.join(args.result_dir, 'FALSE_test.json'), 'w') as f:
+    #     f.write(json.dumps(FALSE) + '\n')
+    # f.close()
+    # with open(os.path.join(args.result_dir, 'ROC_test.json'), 'w') as f:
+    #     f.write(json.dumps(ROC) + '\n')
+    # f.close()
+    # with open(os.path.join(args.result_dir, 'PRC_test.json'), 'w') as f:
+    #     f.write(json.dumps(PRC) + '\n')
+    # f.close()
 
 
 if __name__ == '__main__':

@@ -229,15 +229,15 @@ if __name__ == '__main__':
         train_uids.extend([uid] * num_train)
         train_iids.extend(v[-3])
         # train_labels.extend([1] * num_train)
-        train_labels.extend(u_rats[uid][-3] * 0.2)
+        train_labels.extend([round(rat * 0.2, 2) for rat in u_rats[uid][-3]])
         dev_uids.extend([uid] * num_dev)
         dev_iids.extend(v[-2])
         # dev_labels.extend([1] * num_dev)
-        dev_labels.extend(u_rats[uid][-2] * 0.2)
+        dev_labels.extend([round(rat * 0.2, 2) for rat in u_rats[uid][-2]])
         test_uids.extend([uid] * num_test)
         test_iids.extend(v[-1])
         # test_labels.extend([1] * num_test)
-        test_labels.extend(u_rats[uid][-1] * 0.2)
+        test_labels.extend([round(rat * 0.2, 2) for rat in u_rats[uid][-1]])
 
         for iid in v[-1]:
             remove_uid_in_irecs(i_recs[iid], uid)
@@ -273,15 +273,18 @@ if __name__ == '__main__':
 
     print(len(train_labels), len(dev_labels), len(test_labels))
 
+
     def save_set(uids, iids, labels, settype):
         df = pd.DataFrame({'uids': uids, 'iids': iids, 'labels': labels})
         df.to_csv('./data/raw_data/' + settype + '.csv', sep=',', index=False)
+
 
     def save_record(rectype, recs):
         with open('./data/raw_data/' + rectype + '_record.json', 'w') as f:
             for k, v in recs.items():
                 tmp_str = json.dumps({k: v})
                 f.write(tmp_str + '\n')
+
 
     save_set(train_uids, train_iids, train_labels, 'train')
     save_set(dev_uids, dev_iids, dev_labels, 'dev')
