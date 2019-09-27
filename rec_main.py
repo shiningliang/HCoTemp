@@ -7,19 +7,10 @@ import argparse
 import random
 import torch
 import torch.optim as optim
-from rec_model import COTEMP
+import rec_model
 from rec_preprocess import run_prepare
 from rec_util import train_one_epoch, valid_batch
 
-
-# records = [{"user": [[1, 3, 5], [2, 3, 4]], "item": [[2, 3, 4], [1, 2, 5]]},
-#            {"user": [[1, 2, 4], [3, 4, 5]], "item": [[2, 4, 5], [1, 2, 3]]}]
-#
-# with open(demo_name, 'w') as f:
-#     for i in range(len(records)):
-#         f.write(json.dumps(records[i]) + '\n')
-# f.close()
-#
 
 def parse_args():
     """
@@ -102,11 +93,13 @@ def parse_args():
                                 help='class size (default: 2)')
     model_settings.add_argument('--kmax_pooling', type=int, default=2,
                                 help='top-K max pooling')
+    model_settings.add_argument('--dynamic', type=float, default=False,
+                                help='if use dynamic embedding')
 
     path_settings = parser.add_argument_group('path settings')
     path_settings.add_argument('--task', default='dvd',
                                help='the task name')
-    path_settings.add_argument('--model', default='COTEMP',
+    path_settings.add_argument('--model', default='Static_ID',
                                help='the model name')
     path_settings.add_argument('--user_record_file', default='user_record.json',
                                help='the record file name')
@@ -160,13 +153,19 @@ def train(args, file_paths):
     logger.info('Num of users {} items {}'.format(user_num, item_num))
 
     logger.info('Initialize the model...')
-    UEM = np.random.normal(0., 0.01, (args.T * args.NU + 1, args.NF))
-    UEM[0] = 0.
-    IEM = np.random.normal(0., 0.01, (args.T * args.NI + 1, args.NF))
-    IEM[0] = 0.
+    if args.dynamic:
+        UEM = np.random.normal(0., 0.01, (args.T * args.NU + 1, args.NF))
+        UEM[0] = 0.
+        IEM = np.random.normal(0., 0.01, (args.T * args.NI + 1, args.NF))
+        IEM[0] = 0.
+    else:
+        UEM = np.random.normal(0., 0.01, (args.NU + 1, args.NF))
+        UEM[0] = 0.
+        IEM = np.random.normal(0., 0.01, (args.NI + 1, args.NF))
+        IEM[0] = 0.
     dropout = {'emb': args.emb_dropout, 'layer': args.layer_dropout}
-    model = COTEMP(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden, args.n_layer, dropout,
-                   logger).to(device=args.device)
+    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
+                                           args.n_layer, dropout, logger).to(device=args.device)
     lr = args.lr
     optimizer = getattr(optim, args.optim)(model.parameters(), lr=lr, weight_decay=args.weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 0.5, patience=args.patience, verbose=True)
@@ -262,13 +261,19 @@ def test(args, file_paths):
     logger.info('Num of users {} items {}'.format(user_num, item_num))
 
     logger.info('Initialize the model...')
-    UEM = np.random.normal(0., 0.01, (args.T * args.NU + 1, args.NF))
-    UEM[0] = 0.
-    IEM = np.random.normal(0., 0.01, (args.T * args.NI + 1, args.NF))
-    IEM[0] = 0.
+    if args.dynamic:
+        UEM = np.random.normal(0., 0.01, (args.T * args.NU + 1, args.NF))
+        UEM[0] = 0.
+        IEM = np.random.normal(0., 0.01, (args.T * args.NI + 1, args.NF))
+        IEM[0] = 0.
+    else:
+        UEM = np.random.normal(0., 0.01, (args.NU + 1, args.NF))
+        UEM[0] = 0.
+        IEM = np.random.normal(0., 0.01, (args.NI + 1, args.NF))
+        IEM[0] = 0.
     dropout = {'emb': args.emb_dropout, 'layer': args.layer_dropout}
-    model = COTEMP(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden, args.n_layer, dropout,
-                   logger).to(device=args.device)
+    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
+                                           args.n_layer, dropout, logger).to(device=args.device)
     model.load_state_dict(torch.load(os.path.join(args.model_dir, 'model.bin')))
 
     # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, test_num, args.batch_eval, test_file,
