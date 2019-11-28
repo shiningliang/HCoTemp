@@ -22,15 +22,11 @@ def get_batch(uids, iids, labels, user_records, item_records, device):
     i_maxlen = 0
     for uid, iid in zip(raw_uids, raw_iids):
         urec = user_records[uid - 1][str(uid)]
-        if len(urec) > 20:
-            print(uid)
         u_records.append(urec)
         tmp_len = max((len(r) for r in urec))
         u_maxlen = tmp_len if tmp_len > u_maxlen else u_maxlen
 
         irec = item_records[iid - 1][str(iid)]
-        if len(irec) > 20:
-            print(iid)
         i_records.append(irec)
         tmp_len = max((len(r) for r in irec))
         i_maxlen = tmp_len if tmp_len > i_maxlen else i_maxlen

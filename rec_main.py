@@ -35,11 +35,11 @@ def parse_args():
                                 help='learning rate')
     train_settings.add_argument('--clip', type=float, default=0.35,
                                 help='gradient clip, -1 means no clip (default: 0.35)')
-    train_settings.add_argument('--weight_decay', type=float, default=0.0003,
+    train_settings.add_argument('--weight_decay', type=float, default=0.001,
                                 help='weight decay')
-    train_settings.add_argument('--emb_dropout', type=float, default=0.5,
+    train_settings.add_argument('--emb_dropout', type=float, default=0.2,
                                 help='dropout keep rate')
-    train_settings.add_argument('--layer_dropout', type=float, default=0.5,
+    train_settings.add_argument('--layer_dropout', type=float, default=0.2,
                                 help='dropout keep rate')
     train_settings.add_argument('--batch_train', type=int, default=32,
                                 help='train batch size')
@@ -59,11 +59,11 @@ def parse_args():
     model_settings = parser.add_argument_group('model settings')
     model_settings.add_argument('--max_len', type=int, default=3,
                                 help='max record length in a year')
-    model_settings.add_argument('--T', type=int, default=20,
+    model_settings.add_argument('--T', type=int, default=32,
                                 help='length of the year sequence')
-    model_settings.add_argument('--NU', type=int, default=936,
+    model_settings.add_argument('--NU', type=int, default=26889,
                                 help='num of users')
-    model_settings.add_argument('--NI', type=int, default=2049,
+    model_settings.add_argument('--NI', type=int, default=14020,
                                 help='num of items')
     model_settings.add_argument('--NF', type=int, default=32,
                                 help='num of factors')
@@ -93,13 +93,13 @@ def parse_args():
                                 help='class size (default: 2)')
     model_settings.add_argument('--kmax_pooling', type=int, default=2,
                                 help='top-K max pooling')
-    model_settings.add_argument('--dynamic', type=float, default=False,
+    model_settings.add_argument('--dynamic', type=bool, default=True,
                                 help='if use dynamic embedding')
 
     path_settings = parser.add_argument_group('path settings')
-    path_settings.add_argument('--task', default='dvd',
+    path_settings.add_argument('--task', default='AM_game',
                                help='the task name')
-    path_settings.add_argument('--model', default='Static_ID',
+    path_settings.add_argument('--model', default='Dynamic_COTEMP',
                                help='the model name')
     path_settings.add_argument('--user_record_file', default='user_record.json',
                                help='the record file name')
@@ -149,7 +149,9 @@ def train(args, file_paths):
     valid_num = len(valid_file['labels'])
     logger.info('Num of train data {} valid data {}'.format(train_num, valid_num))
     user_num = len(user_record_file)
+    args.NU = user_num
     item_num = len(item_record_file)
+    args.NI = item_num
     logger.info('Num of users {} items {}'.format(user_num, item_num))
 
     logger.info('Initialize the model...')
@@ -324,6 +326,7 @@ if __name__ == '__main__':
         args.device = torch.device('cpu')
 
     logger.info('Preparing the directories...')
+    args.raw_dir = os.path.join(args.raw_dir, args.task)
     args.processed_dir = os.path.join(args.processed_dir, args.task)
     args.model_dir = os.path.join(args.outputs_dir, args.task, args.model, args.model_dir)
     args.result_dir = os.path.join(args.outputs_dir, args.task, args.model, args.result_dir)

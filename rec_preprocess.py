@@ -24,8 +24,6 @@ def parse_dynamic_record(file_path, user_in, item_in, T, NU, NI, user_out, item_
             # record[uid][t] 第t月与user有交互的item list
             for idx, ut_i in enumerate(record[uid][t]):
                 record[uid][t][idx] = t * NI + ut_i  # 按第t月寻找组 按id偏移
-        if len(record[uid]) != 20:
-            print(uid)
 
     item_path = os.path.join(file_path, item_in)
     lines = open(item_path, 'r').readlines()
@@ -35,8 +33,6 @@ def parse_dynamic_record(file_path, user_in, item_in, T, NU, NI, user_out, item_
     for iid, record in enumerate(irecords):
         iid = str(iid + 1)
         i_len = len(record[iid])
-        if iid == 1846:
-            print(iid)
         if i_len >= T:
             record[iid] = record[iid][:T]
             i_len = T
@@ -46,8 +42,6 @@ def parse_dynamic_record(file_path, user_in, item_in, T, NU, NI, user_out, item_
         for t in range(i_len):
             for idx, it_u in enumerate(record[iid][t]):
                 record[iid][t][idx] = t * NU + it_u
-        if len(record[iid]) != 20:
-            print(iid)
 
     with open(user_out, 'wb') as fo:
         pkl.dump(urecords, fo)
@@ -78,8 +72,6 @@ def parse_static_record(file_path, user_in, item_in, T, NU, NI, user_out, item_o
             # record[uid][t] 第t月与user有交互的item list
             # for idx, ut_i in enumerate(record[uid][t]):
             #     record[uid][t][idx] = t * NI + ut_i  # 按第t月寻找组 按id偏移
-        if len(record[uid]) != 20:
-            print(uid)
 
     item_path = os.path.join(file_path, item_in)
     lines = open(item_path, 'r').readlines()
@@ -89,8 +81,6 @@ def parse_static_record(file_path, user_in, item_in, T, NU, NI, user_out, item_o
     for iid, record in enumerate(irecords):
         iid = str(iid + 1)
         i_len = len(record[iid])
-        if iid == 1846:
-            print(iid)
         if i_len >= T:
             record[iid] = record[iid][:T]
             i_len = T
@@ -100,8 +90,6 @@ def parse_static_record(file_path, user_in, item_in, T, NU, NI, user_out, item_o
         # for t in range(i_len):
         #     for idx, it_u in enumerate(record[iid][t]):
         #         record[iid][t][idx] = t * NU + it_u
-        if len(record[iid]) != 20:
-            print(iid)
 
     with open(user_out, 'wb') as fo:
         pkl.dump(urecords, fo)

@@ -120,8 +120,8 @@ def remove(samples, ratings, remove_list):
         scores = ratings[sid]
         ratings[sid] = []
         for idx, rec in enumerate(month):
-            ids = set(rec).intersection(set(remove_list))
-            rec = list(set(rec).difference(ids))
+            ids = set(rec).intersection(set(remove_list))  # 在remove_list中的id
+            rec = list(set(rec).difference(ids))  # 除此之外剩余的id
             for id in ids:
                 scores[idx].pop(id)
             if len(rec) > 0:
@@ -194,25 +194,27 @@ def remove_uid_in_irecs(recs, uid):
 
 
 if __name__ == '__main__':
-    path = './data/raw_data/movie-ratings.txt'
+    # path = './data/raw_data/movie-ratings.txt'
     # user_records, user_ratings, item_records, item_ratings = read_file(path)
     # filer_records(user_records, item_records, user_ratings, item_ratings)
 
     # stat_len(user_records, 'user')
     # stat_len(item_records, 'item')
 
-    with open('u_rec_sort.pkl', 'rb') as fu:
+    with open('u_rec.pkl', 'rb') as fu:
         u_recs = pkl.load(fu)
     fu.close()
-    with open('i_rec_sort.pkl', 'rb') as fi:
+    with open('i_rec.pkl', 'rb') as fi:
         i_recs = pkl.load(fi)
     fi.close()
-    with open('u_rat_sort.pkl', 'rb') as fu:
+    with open('u_rat.pkl', 'rb') as fu:
         u_rats = pkl.load(fu)
     fu.close()
-    with open('i_rat_sort.pkl', 'rb') as fi:
+    with open('i_rat.pkl', 'rb') as fi:
         i_rats = pkl.load(fi)
     fi.close()
+
+    filer_records(u_recs, i_recs, u_rats, i_rats)
 
     num_user = len(u_recs)
     user_list = set([x for x in range(num_user)])
