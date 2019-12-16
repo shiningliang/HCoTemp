@@ -70,6 +70,8 @@ class Dynamic_COTEMP(nn.Module):
         user_avgs = torch.cat([user_avgs, uid_embs], dim=2)
         item_avgs = torch.cat([item_avgs, iid_embs], dim=2)
 
+        self.user_encoder.flatten_parameters()
+        self.item_encoder.flatten_parameters()
         uout, ustate = self.user_encoder(user_avgs)
         iout, istate = self.item_encoder(item_avgs)
 

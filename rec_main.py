@@ -7,9 +7,11 @@ import argparse
 import random
 import torch
 import torch.optim as optim
+import torch.distributed as dist
 import rec_model
 from rec_preprocess import run_prepare
 from rec_util import train_one_epoch, valid_batch
+from pytorch_transformers import WarmupCosineSchedule
 
 
 def parse_args():
@@ -23,8 +25,11 @@ def parse_args():
                         help='train and valid the model')
     parser.add_argument('--test', action='store_true',
                         help='evaluate the model on test set')
-    parser.add_argument('--gpu', type=str, default='0',
+    parser.add_argument('--gpu', type=int, default=0,
                         help='specify gpu device')
+    parser.add_argument('--is_distributed', type=bool, default=False,
+                        help='distributed training')
+    parser.add_argument('--local_rank', type=int, default=0)
     parser.add_argument('--seed', type=int, default=23333,
                         help='random seed (default: 23333)')
 
@@ -35,11 +40,11 @@ def parse_args():
                                 help='learning rate')
     train_settings.add_argument('--clip', type=float, default=0.35,
                                 help='gradient clip, -1 means no clip (default: 0.35)')
-    train_settings.add_argument('--weight_decay', type=float, default=0.001,
+    train_settings.add_argument('--weight_decay', type=float, default=0.0003,
                                 help='weight decay')
-    train_settings.add_argument('--emb_dropout', type=float, default=0.2,
+    train_settings.add_argument('--emb_dropout', type=float, default=0.5,
                                 help='dropout keep rate')
-    train_settings.add_argument('--layer_dropout', type=float, default=0.2,
+    train_settings.add_argument('--layer_dropout', type=float, default=0.5,
                                 help='dropout keep rate')
     train_settings.add_argument('--batch_train', type=int, default=32,
                                 help='train batch size')
@@ -47,8 +52,9 @@ def parse_args():
                                 help='dev batch size')
     train_settings.add_argument('--epochs', type=int, default=10,
                                 help='train epochs')
-    train_settings.add_argument('--optim', default='Adam',
+    train_settings.add_argument('--optim', default='AdamW',
                                 help='optimizer type')
+    train_settings.add_argument('--warmup', type=float, default=0.5)
     train_settings.add_argument('--patience', type=int, default=2,
                                 help='num of epochs for train patients')
     train_settings.add_argument('--period', type=int, default=50,
@@ -57,17 +63,15 @@ def parse_args():
                                 help='Number of threads in input pipeline')
 
     model_settings = parser.add_argument_group('model settings')
-    model_settings.add_argument('--max_len', type=int, default=3,
-                                help='max record length in a year')
-    model_settings.add_argument('--T', type=int, default=32,
+    model_settings.add_argument('--T', type=int, default=40,
                                 help='length of the year sequence')
     model_settings.add_argument('--NU', type=int, default=26889,
                                 help='num of users')
     model_settings.add_argument('--NI', type=int, default=14020,
                                 help='num of items')
-    model_settings.add_argument('--NF', type=int, default=32,
+    model_settings.add_argument('--NF', type=int, default=128,
                                 help='num of factors')
-    model_settings.add_argument('--n_hidden', type=int, default=64,
+    model_settings.add_argument('--n_hidden', type=int, default=128,
                                 help='size of LSTM hidden units')
     model_settings.add_argument('--n_layer', type=int, default=2,
                                 help='num of layers')
@@ -93,11 +97,11 @@ def parse_args():
                                 help='class size (default: 2)')
     model_settings.add_argument('--kmax_pooling', type=int, default=2,
                                 help='top-K max pooling')
-    model_settings.add_argument('--dynamic', type=bool, default=True,
+    model_settings.add_argument('--dynamic', action='store_true',
                                 help='if use dynamic embedding')
 
     path_settings = parser.add_argument_group('path settings')
-    path_settings.add_argument('--task', default='AM_game',
+    path_settings.add_argument('--task', default='AM_Office',
                                help='the task name')
     path_settings.add_argument('--model', default='Dynamic_COTEMP',
                                help='the model name')
@@ -167,10 +171,18 @@ def train(args, file_paths):
         IEM[0] = 0.
     dropout = {'emb': args.emb_dropout, 'layer': args.layer_dropout}
     model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
-                                           args.n_layer, dropout, logger).to(device=args.device)
+                                           args.n_layer, dropout, logger).to(args.device)
+    # if args.is_distributed:
+    #     model = torch.nn.parallel.DistributedDataParallel(
+    #         model, device_ids=[args.local_rank], output_device=args.local_rank,
+            # this should be removed if we update BatchNorm stats
+            # broadcast_buffers=False,
+        # )
+    model = torch.nn.DataParallel(model)
     lr = args.lr
     optimizer = getattr(optim, args.optim)(model.parameters(), lr=lr, weight_decay=args.weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 0.5, patience=args.patience, verbose=True)
+    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 0.5, patience=args.patience, verbose=True)
+    scheduler = WarmupCosineSchedule(optimizer, args.warmup, (train_num // args.batch_train + 1) * args.epochs)
 
     # max_acc, max_p, max_r, max_f, max_sum, max_epoch = 0, 0, 0, 0, 0, 0
     # FALSE = {}
@@ -182,6 +194,7 @@ def train(args, file_paths):
         train_loss = train_one_epoch(model, optimizer, train_num, train_file, user_record_file, item_record_file, args,
                                      logger)
         logger.info('Epoch {} MSE {}'.format(ep, train_loss))
+        scheduler.step()
 
         logger.info('Evaluating the model for epoch {}'.format(ep))
         # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, valid_num, args.batch_eval, valid_file,
@@ -214,7 +227,7 @@ def train(args, file_paths):
             torch.save(model.state_dict(), os.path.join(args.model_dir, 'model.bin'))
 
         # scheduler.step(metrics=eval_metrics['f1'])
-        scheduler.step(valid_loss)
+        # scheduler.step(valid_loss)
         randnum = random.randint(0, 1e8)
         random.seed(randnum)
         random.shuffle(train_file['uids'])
@@ -275,7 +288,14 @@ def test(args, file_paths):
         IEM[0] = 0.
     dropout = {'emb': args.emb_dropout, 'layer': args.layer_dropout}
     model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
-                                           args.n_layer, dropout, logger).to(device=args.device)
+                                           args.n_layer, dropout, logger).to(args.device)
+    # if args.is_distributed:
+    #     model = torch.nn.parallel.DistributedDataParallel(
+    #         model, device_ids=[args.local_rank], output_device=args.local_rank,
+            # this should be removed if we update BatchNorm stats
+            # broadcast_buffers=False,
+        # )
+    model = torch.nn.DataParallel(model)
     model.load_state_dict(torch.load(os.path.join(args.model_dir, 'model.bin')))
 
     # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, test_num, args.batch_eval, test_file,
@@ -306,6 +326,21 @@ def test(args, file_paths):
     # f.close()
 
 
+def synchronize():
+    """
+    Helper function to synchronize (barrier) among all processes when
+    using distributed training
+    """
+    if not dist.is_available():
+        return
+    if not dist.is_initialized():
+        return
+    world_size = dist.get_world_size()
+    if world_size == 1:
+        return
+    dist.barrier()
+
+
 if __name__ == '__main__':
     args = parse_args()
 
@@ -316,17 +351,27 @@ if __name__ == '__main__':
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
-    logger.info('Running with args : {}'.format(args))
     os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0, 1'
+    # WORLD_SIZE 由torch.distributed.launch.py产生 具体数值为 nproc_per_node*node(主机数，这里为1)
+    # num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
+    # args.is_distributed = num_gpus > 1
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         args.device = torch.device('cuda')
+        torch.cuda.set_device(args.gpu)
+        # torch.cuda.set_device(args.local_rank)  # 这里设定每一个进程使用的GPU是一定的
+        # torch.distributed.init_process_group(backend="nccl", init_method="env://")
+        # synchronize()
     else:
         args.device = torch.device('cpu')
 
     logger.info('Preparing the directories...')
     args.raw_dir = os.path.join(args.raw_dir, args.task)
+    if args.dynamic:
+        args.task = args.task + '_dynamic'
+    else:
+        args.task = args.task + '_static'
     args.processed_dir = os.path.join(args.processed_dir, args.task)
     args.model_dir = os.path.join(args.outputs_dir, args.task, args.model, args.model_dir)
     args.result_dir = os.path.join(args.outputs_dir, args.task, args.model, args.result_dir)
@@ -347,6 +392,7 @@ if __name__ == '__main__':
             self.item_record_file = os.path.join(args.processed_dir, 'item_record.pkl')
 
 
+    logger.info('Running with args : {}'.format(args))
     file_paths = FilePaths()
     if args.prepare:
         run_prepare(args, file_paths)
