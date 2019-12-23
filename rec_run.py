@@ -7,10 +7,11 @@ import argparse
 import random
 import torch
 import torch.optim as optim
+from torch.utils.data import DataLoader
 import torch.distributed as dist
 import rec_model
 from rec_preprocess import run_prepare
-from rec_util import train_one_epoch, valid_batch
+from rec_util import train_one_epoch, valid_batch, load_pkl, AMDataset, my_fn
 from pytorch_transformers import WarmupCosineSchedule
 
 
@@ -63,7 +64,7 @@ def parse_args():
                                 help='Number of threads in input pipeline')
 
     model_settings = parser.add_argument_group('model settings')
-    model_settings.add_argument('--T', type=int, default=32,
+    model_settings.add_argument('--T', type=int, default=36,
                                 help='length of the year sequence')
     model_settings.add_argument('--NU', type=int, default=26889,
                                 help='num of users')
@@ -132,25 +133,19 @@ def parse_args():
     return parser.parse_args()
 
 
-def train(args, file_paths):
+def func_train(args, file_paths):
     logger = logging.getLogger('Rec')
-    logger.info('Loading train file...')
-    with open(file_paths.train_file, 'rb') as fh:
-        train_file = pkl.load(fh)
-    fh.close()
-    logger.info('Loading valid file...')
-    with open(file_paths.valid_file, 'rb') as fh:
-        valid_file = pkl.load(fh)
     logger.info('Loading record file...')
-    with open(file_paths.user_record_file, 'rb') as fh:
-        user_record_file = pkl.load(fh)
-    fh.close()
-    with open(file_paths.item_record_file, 'rb') as fh:
-        item_record_file = pkl.load(fh)
-    fh.close()
+    user_record_file = load_pkl(file_paths.user_record_file)
+    item_record_file = load_pkl(file_paths.item_record_file)
 
-    train_num = len(train_file['labels'])
-    valid_num = len(valid_file['labels'])
+    train_file = load_pkl(file_paths.train_file)
+
+    train_set = AMDataset(file_paths.train_file, user_record_file, item_record_file, logger, 'train')
+    valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, logger, 'valid')
+
+    train_num = len(train_set.labels)
+    valid_num = len(valid_set.labels)
     logger.info('Num of train data {} valid data {}'.format(train_num, valid_num))
     user_num = len(user_record_file)
     args.NU = user_num
@@ -183,6 +178,8 @@ def train(args, file_paths):
     optimizer = getattr(optim, args.optim)(model.parameters(), lr=lr, weight_decay=args.weight_decay)
     # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 0.5, patience=args.patience, verbose=True)
     scheduler = WarmupCosineSchedule(optimizer, args.warmup, (train_num // args.batch_train + 1) * args.epochs)
+    train_loader = DataLoader(train_set, batch_size=args.batch_train, shuffle=True, collate_fn=my_fn)
+    valid_loader = DataLoader(valid_set, batch_size=args.batch_train, shuffle=False, collate_fn=my_fn)
 
     # max_acc, max_p, max_r, max_f, max_sum, max_epoch = 0, 0, 0, 0, 0, 0
     # FALSE = {}
@@ -191,8 +188,34 @@ def train(args, file_paths):
     min_loss, min_epoch = 1e10, 0
     for ep in range(1, args.epochs + 1):
         logger.info('Training the model for epoch {}'.format(ep))
-        train_loss = train_one_epoch(model, optimizer, train_num, train_file, user_record_file, item_record_file, args,
-                                     logger)
+        # train_loss = train_one_epoch(model, optimizer, train_num, train_file, user_record_file, item_record_file, args,
+        #                              logger)
+        model.train()
+        train_loss = []
+        n_batch_loss = 0
+        for batch_idx, batch in enumerate(train_loader):
+            b_user_records, b_item_records, b_uids, b_iids, b_labels = batch
+            b_user_records = b_user_records.to(args.device)
+            b_item_records = b_item_records.to(args.device)
+            b_uids = b_uids.to(args.device)
+            b_iids = b_iids.to(args.device)
+            b_labels = b_labels.to(args.device)
+            optimizer.zero_grad()
+            outputs = model(b_user_records, b_item_records, b_uids, b_iids)
+            criterion = torch.nn.MSELoss()
+            loss = criterion(outputs, b_labels.reshape(b_labels.shape[0], 1))
+            loss.backward()
+            if args.clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+            optimizer.step()
+            n_batch_loss += loss.item()
+            bidx = batch_idx + 1
+            if bidx % args.period == 0:
+                logger.info(
+                    'AvgLoss batch [{} {}] - {}'.format(bidx - args.period + 1, bidx, n_batch_loss / args.period))
+                n_batch_loss = 0
+            train_loss.append(loss.item())
+
         logger.info('Epoch {} MSE {}'.format(ep, train_loss))
         scheduler.step()
 
@@ -228,13 +251,13 @@ def train(args, file_paths):
 
         # scheduler.step(metrics=eval_metrics['f1'])
         # scheduler.step(valid_loss)
-        randnum = random.randint(0, 1e8)
-        random.seed(randnum)
-        random.shuffle(train_file['uids'])
-        random.seed(randnum)
-        random.shuffle(train_file['iids'])
-        random.seed(randnum)
-        random.shuffle(train_file['labels'])
+        # randnum = random.randint(0, 1e8)
+        # random.seed(randnum)
+        # random.shuffle(train_file['uids'])
+        # random.seed(randnum)
+        # random.shuffle(train_file['iids'])
+        # random.seed(randnum)
+        # random.shuffle(train_file['labels'])
 
     # logger.info('Max Acc - {}'.format(max_acc))
     # logger.info('Max Precision - {}'.format(max_p))
@@ -255,24 +278,22 @@ def train(args, file_paths):
     # f.close()
 
 
-def test(args, file_paths):
+def func_test(args, file_paths):
     logger = logging.getLogger('Rec')
-    logger.info('Loading test file...')
-    with open(file_paths.test_file, 'rb') as fh:
-        test_file = pkl.load(fh)
-    fh.close()
     logger.info('Loading record file...')
-    with open(file_paths.user_record_file, 'rb') as fh:
-        user_record_file = pkl.load(fh)
-    fh.close()
-    with open(file_paths.item_record_file, 'rb') as fh:
-        item_record_file = pkl.load(fh)
-    fh.close()
+    user_record_file = load_pkl(file_paths.user_record_file)
+    item_record_file = load_pkl(file_paths.item_record_file)
 
-    test_num = len(test_file['labels'])
-    logger.info('Num of test data {}'.format(test_num))
+    train_set = AMDataset(file_paths.train_file, user_record_file, item_record_file, logger, 'train')
+    valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, logger, 'valid')
+
+    train_num = len(train_set.labels)
+    valid_num = len(valid_set.labels)
+    logger.info('Num of train data {} valid data {}'.format(train_num, valid_num))
     user_num = len(user_record_file)
+    args.NU = user_num
     item_num = len(item_record_file)
+    args.NI = item_num
     logger.info('Num of users {} items {}'.format(user_num, item_num))
 
     logger.info('Initialize the model...')
@@ -357,7 +378,7 @@ if __name__ == '__main__':
     # num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
     # args.is_distributed = num_gpus > 1
     torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and args.gpu > -1:
         args.device = torch.device('cuda')
         torch.cuda.set_device(args.gpu)
         # torch.cuda.set_device(args.local_rank)  # 这里设定每一个进程使用的GPU是一定的
@@ -397,6 +418,6 @@ if __name__ == '__main__':
     if args.prepare:
         run_prepare(args, file_paths)
     if args.train:
-        train(args, file_paths)
+        func_train(args, file_paths)
     if args.test:
-        test(args, file_paths)
+        func_test(args, file_paths)

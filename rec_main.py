@@ -10,7 +10,7 @@ import torch.optim as optim
 import torch.distributed as dist
 import rec_model
 from rec_preprocess import run_prepare
-from rec_util import train_one_epoch, valid_batch
+from rec_util import train_one_epoch, valid_batch, load_pkl, AMDataset, my_fn
 from pytorch_transformers import WarmupCosineSchedule
 
 
@@ -134,25 +134,17 @@ def parse_args():
     return parser.parse_args()
 
 
-def train(args, file_paths):
+def func_train(args, file_paths):
     logger = logging.getLogger('Rec')
-    logger.info('Loading train file...')
-    with open(file_paths.train_file, 'rb') as fh:
-        train_file = pkl.load(fh)
-    fh.close()
-    logger.info('Loading valid file...')
-    with open(file_paths.valid_file, 'rb') as fh:
-        valid_file = pkl.load(fh)
     logger.info('Loading record file...')
-    with open(file_paths.user_record_file, 'rb') as fh:
-        user_record_file = pkl.load(fh)
-    fh.close()
-    with open(file_paths.item_record_file, 'rb') as fh:
-        item_record_file = pkl.load(fh)
-    fh.close()
+    user_record_file = load_pkl(file_paths.user_record_file)
+    item_record_file = load_pkl(file_paths.item_record_file)
 
-    train_num = len(train_file['labels'])
-    valid_num = len(valid_file['labels'])
+    train_set = AMDataset(file_paths.train_file, user_record_file, item_record_file, logger, 'train')
+    valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, logger, 'valid')
+
+    train_num = len(train_set.labels)
+    valid_num = len(valid_set.labels)
     logger.info('Num of train data {} valid data {}'.format(train_num, valid_num))
     user_num = len(user_record_file)
     args.NU = user_num
@@ -230,13 +222,13 @@ def train(args, file_paths):
 
         # scheduler.step(metrics=eval_metrics['f1'])
         # scheduler.step(valid_loss)
-        randnum = random.randint(0, 1e8)
-        random.seed(randnum)
-        random.shuffle(train_file['uids'])
-        random.seed(randnum)
-        random.shuffle(train_file['iids'])
-        random.seed(randnum)
-        random.shuffle(train_file['labels'])
+        # randnum = random.randint(0, 1e8)
+        # random.seed(randnum)
+        # random.shuffle(train_file['uids'])
+        # random.seed(randnum)
+        # random.shuffle(train_file['iids'])
+        # random.seed(randnum)
+        # random.shuffle(train_file['labels'])
 
     # logger.info('Max Acc - {}'.format(max_acc))
     # logger.info('Max Precision - {}'.format(max_p))
@@ -257,7 +249,7 @@ def train(args, file_paths):
     # f.close()
 
 
-def test(args, file_paths):
+def func_test(args, file_paths):
     logger = logging.getLogger('Rec')
     logger.info('Loading test file...')
     with open(file_paths.test_file, 'rb') as fh:
@@ -399,6 +391,6 @@ if __name__ == '__main__':
     if args.prepare:
         run_prepare(args, file_paths)
     if args.train:
-        train(args, file_paths)
+        func_train(args, file_paths)
     if args.test:
-        test(args, file_paths)
+        func_test(args, file_paths)

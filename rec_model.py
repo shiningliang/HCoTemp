@@ -121,6 +121,8 @@ class Dynamic_ID(nn.Module):
         uid_embs = self.user_embedding(uids)  # user每个月的embedding
         iid_embs = self.item_embedding(iids)
 
+        self.user_encoder.flatten_parameters()
+        self.item_encoder.flatten_parameters()
         uout, ustate = self.user_encoder(uid_embs)
         iout, istate = self.item_encoder(iid_embs)
 
@@ -325,6 +327,8 @@ class Static_ID(nn.Module):
         uid_embs = self.user_embedding(uids)  # user每个月的embedding
         iid_embs = self.item_embedding(iids)
 
+        self.user_encoder.flatten_parameters()
+        self.item_encoder.flatten_parameters()
         uout, ustate = self.user_encoder(uid_embs)
         iout, istate = self.item_encoder(iid_embs)
 
