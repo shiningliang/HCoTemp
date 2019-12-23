@@ -40,7 +40,7 @@ def parse_args():
                                 help='learning rate')
     train_settings.add_argument('--clip', type=float, default=0.35,
                                 help='gradient clip, -1 means no clip (default: 0.35)')
-    train_settings.add_argument('--weight_decay', type=float, default=0.0005,
+    train_settings.add_argument('--weight_decay', type=float, default=0.0003,
                                 help='weight decay')
     train_settings.add_argument('--emb_dropout', type=float, default=0.5,
                                 help='dropout keep rate')
@@ -63,13 +63,11 @@ def parse_args():
                                 help='Number of threads in input pipeline')
 
     model_settings = parser.add_argument_group('model settings')
-    model_settings.add_argument('--T', type=int, default=36,
-                                help='length of feature period')
-    model_settings.add_argument('--max_len', type=int, default=40,
+    model_settings.add_argument('--T', type=int, default=32,
                                 help='length of the year sequence')
-    model_settings.add_argument('--NU', type=int, default=49506,
+    model_settings.add_argument('--NU', type=int, default=26889,
                                 help='num of users')
-    model_settings.add_argument('--NI', type=int, default=21546,
+    model_settings.add_argument('--NI', type=int, default=14020,
                                 help='num of items')
     model_settings.add_argument('--NF', type=int, default=128,
                                 help='num of factors')
@@ -105,7 +103,7 @@ def parse_args():
     path_settings = parser.add_argument_group('path settings')
     path_settings.add_argument('--task', default='AM_Office',
                                help='the task name')
-    path_settings.add_argument('--model', default='Dynamic_COTEMP',
+    path_settings.add_argument('--model', default='Static_COTEMP',
                                help='the model name')
     path_settings.add_argument('--user_record_file', default='user_record.json',
                                help='the record file name')
@@ -180,7 +178,7 @@ def train(args, file_paths):
             # this should be removed if we update BatchNorm stats
             # broadcast_buffers=False,
         # )
-    model = torch.nn.DataParallel(model)
+    # model = torch.nn.DataParallel(model)
     lr = args.lr
     optimizer = getattr(optim, args.optim)(model.parameters(), lr=lr, weight_decay=args.weight_decay)
     # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 0.5, patience=args.patience, verbose=True)
@@ -297,7 +295,7 @@ def test(args, file_paths):
             # this should be removed if we update BatchNorm stats
             # broadcast_buffers=False,
         # )
-    model = torch.nn.DataParallel(model)
+    # model = torch.nn.DataParallel(model)
     model.load_state_dict(torch.load(os.path.join(args.model_dir, 'model.bin')))
 
     # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, test_num, args.batch_eval, test_file,

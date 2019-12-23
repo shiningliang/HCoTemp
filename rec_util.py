@@ -1,10 +1,11 @@
+import os
 import numpy as np
 import torch
+from torch.utils.data import Dataset
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_curve, auc, \
     precision_recall_curve
 import matplotlib.pyplot as plt
 import seaborn
-import os
 
 seaborn.set_context(context="talk")
 plt.switch_backend('agg')
@@ -126,3 +127,7 @@ def valid_batch(model, data_num, batch_size, valid_file, user_records, item_reco
     # logger.info('Full confusion matrix')
     # logger.info(confusion_matrix(labels, preds))
     # return metrics, fpr, tpr, precisions, recalls
+
+
+# class AMData(Dataset):
+#     def __init__(self):
