@@ -7,6 +7,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
     precision_recall_curve
 import matplotlib.pyplot as plt
 import seaborn
+from apex import amp
 
 seaborn.set_context(context="talk")
 plt.switch_backend('agg')
@@ -177,3 +178,55 @@ def my_fn(batch):
 
     return torch.from_numpy(u_records), torch.from_numpy(i_records), torch.from_numpy(np.asarray(uids)), \
            torch.from_numpy(np.asarray(iids)), torch.from_numpy(np.asarray(labels))
+
+
+def new_train_epoch(model, optimizer, loader, args, logger, is_dist=True):
+    model.train()
+    train_loss = []
+    n_batch_loss = 0
+    for batch_idx, batch in enumerate(loader):
+        b_user_records, b_item_records, b_uids, b_iids, b_labels = batch
+        b_user_records = b_user_records.to(args.device)
+        b_item_records = b_item_records.to(args.device)
+        b_uids = b_uids.to(args.device)
+        b_iids = b_iids.to(args.device)
+        b_labels = b_labels.to(args.device)
+        optimizer.zero_grad()
+        outputs = model(b_user_records, b_item_records, b_uids, b_iids)
+        criterion = torch.nn.MSELoss()
+        loss = criterion(outputs, b_labels.reshape(b_labels.shape[0], 1))
+        if is_dist:
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
+        if args.clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+        optimizer.step()
+        n_batch_loss += loss.item()
+        bidx = batch_idx + 1
+        if bidx % args.period == 0:
+            logger.info(
+                'AvgLoss batch [{} {}] - {}'.format(bidx - args.period + 1, bidx, n_batch_loss / args.period))
+            n_batch_loss = 0
+        train_loss.append(loss.item())
+
+    return np.mean(train_loss)
+
+
+def new_valid_epoch(model, loader, args):
+    valid_loss = []
+    model.eval()
+    for batch_idx, batch in enumerate(loader):
+        b_user_records, b_item_records, b_uids, b_iids, b_labels = batch
+        b_user_records = b_user_records.to(args.device)
+        b_item_records = b_item_records.to(args.device)
+        b_uids = b_uids.to(args.device)
+        b_iids = b_iids.to(args.device)
+        b_labels = b_labels.to(args.device)
+        outputs = model(b_user_records, b_item_records, b_uids, b_iids)
+        criterion = torch.nn.MSELoss()
+        loss = criterion(outputs, b_labels.reshape(b_labels.shape[0], 1))
+        valid_loss.append(loss.item())
+
+    return np.mean(valid_loss)

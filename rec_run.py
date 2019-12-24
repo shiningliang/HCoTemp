@@ -8,11 +8,15 @@ import random
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 import rec_model
 from rec_preprocess import run_prepare
-from rec_util import train_one_epoch, valid_batch, load_pkl, AMDataset, my_fn
+from rec_util import new_train_epoch, new_valid_epoch, load_pkl, AMDataset, my_fn
 from pytorch_transformers import WarmupCosineSchedule
+
+from apex import amp
+from apex.parallel import DistributedDataParallel
 
 
 def parse_args():
@@ -30,7 +34,8 @@ def parse_args():
                         help='specify gpu device')
     parser.add_argument('--is_distributed', type=bool, default=False,
                         help='distributed training')
-    parser.add_argument('--local_rank', type=int, default=0)
+    parser.add_argument('--local_rank', type=int, default=-1,
+                        help='node rank for distributed training')
     parser.add_argument('--seed', type=int, default=23333,
                         help='random seed (default: 23333)')
 
@@ -104,7 +109,7 @@ def parse_args():
     path_settings = parser.add_argument_group('path settings')
     path_settings.add_argument('--task', default='AM_Office',
                                help='the task name')
-    path_settings.add_argument('--model', default='Static_COTEMP',
+    path_settings.add_argument('--model', default='Dynamic_COTEMP',
                                help='the model name')
     path_settings.add_argument('--user_record_file', default='user_record.json',
                                help='the record file name')
@@ -133,17 +138,20 @@ def parse_args():
     return parser.parse_args()
 
 
-def func_train(args, file_paths):
+def func_train(args, file_paths, gpu, ngpus_per_node):
+    torch.cuda.set_device(gpu)
     logger = logging.getLogger('Rec')
     logger.info('Loading record file...')
     user_record_file = load_pkl(file_paths.user_record_file)
     item_record_file = load_pkl(file_paths.item_record_file)
 
-    train_file = load_pkl(file_paths.train_file)
-
     train_set = AMDataset(file_paths.train_file, user_record_file, item_record_file, logger, 'train')
     valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, logger, 'valid')
-
+    args.batch_train = int(args.batch_train / ngpus_per_node)
+    train_sampler = DistributedSampler(train_set)
+    train_loader = DataLoader(train_set, batch_size=args.batch_train, shuffle=(train_sampler is None), num_workers=4,
+                              collate_fn=my_fn, pin_memory=True, sampler=train_sampler)
+    valid_loader = DataLoader(valid_set, batch_size=args.batch_train, shuffle=False, num_workers=4, collate_fn=my_fn)
     train_num = len(train_set.labels)
     valid_num = len(valid_set.labels)
     logger.info('Num of train data {} valid data {}'.format(train_num, valid_num))
@@ -168,18 +176,16 @@ def func_train(args, file_paths):
     model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
                                            args.n_layer, dropout, logger).to(args.device)
     # if args.is_distributed:
-    #     model = torch.nn.parallel.DistributedDataParallel(
-    #         model, device_ids=[args.local_rank], output_device=args.local_rank,
-            # this should be removed if we update BatchNorm stats
-            # broadcast_buffers=False,
-        # )
+    # model = torch.nn.parallel.DistributedDataParallel(
+    #     model, device_ids=[args.local_rank], output_device=args.local_rank,
+        # this should be removed if we update BatchNorm stats
+        # broadcast_buffers=False)
     # model = torch.nn.DataParallel(model)
-    lr = args.lr
-    optimizer = getattr(optim, args.optim)(model.parameters(), lr=lr, weight_decay=args.weight_decay)
+    optimizer = getattr(optim, args.optim)(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    model, optimizer = amp.initialize(model, optimizer, opt_level="O0")
+    model = DistributedDataParallel(model)
     # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 0.5, patience=args.patience, verbose=True)
     scheduler = WarmupCosineSchedule(optimizer, args.warmup, (train_num // args.batch_train + 1) * args.epochs)
-    train_loader = DataLoader(train_set, batch_size=args.batch_train, shuffle=True, collate_fn=my_fn)
-    valid_loader = DataLoader(valid_set, batch_size=args.batch_train, shuffle=False, collate_fn=my_fn)
 
     # max_acc, max_p, max_r, max_f, max_sum, max_epoch = 0, 0, 0, 0, 0, 0
     # FALSE = {}
@@ -188,34 +194,9 @@ def func_train(args, file_paths):
     min_loss, min_epoch = 1e10, 0
     for ep in range(1, args.epochs + 1):
         logger.info('Training the model for epoch {}'.format(ep))
-        # train_loss = train_one_epoch(model, optimizer, train_num, train_file, user_record_file, item_record_file, args,
-        #                              logger)
-        model.train()
-        train_loss = []
-        n_batch_loss = 0
-        for batch_idx, batch in enumerate(train_loader):
-            b_user_records, b_item_records, b_uids, b_iids, b_labels = batch
-            b_user_records = b_user_records.to(args.device)
-            b_item_records = b_item_records.to(args.device)
-            b_uids = b_uids.to(args.device)
-            b_iids = b_iids.to(args.device)
-            b_labels = b_labels.to(args.device)
-            optimizer.zero_grad()
-            outputs = model(b_user_records, b_item_records, b_uids, b_iids)
-            criterion = torch.nn.MSELoss()
-            loss = criterion(outputs, b_labels.reshape(b_labels.shape[0], 1))
-            loss.backward()
-            if args.clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
-            optimizer.step()
-            n_batch_loss += loss.item()
-            bidx = batch_idx + 1
-            if bidx % args.period == 0:
-                logger.info(
-                    'AvgLoss batch [{} {}] - {}'.format(bidx - args.period + 1, bidx, n_batch_loss / args.period))
-                n_batch_loss = 0
-            train_loss.append(loss.item())
-
+        # train_loss = train_one_epoch(model, optimizer, train_num, train_file, user_record_file, item_record_file,
+        #                              args, logger)
+        train_loss = new_train_epoch(model, optimizer, train_loader, args, logger)
         logger.info('Epoch {} MSE {}'.format(ep, train_loss))
         scheduler.step()
 
@@ -223,8 +204,9 @@ def func_train(args, file_paths):
         # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, valid_num, args.batch_eval, valid_file,
         #                                                         user_record_file, item_record_file, args.device,
         #                                                         'valid', logger)
-        valid_loss = valid_batch(model, valid_num, args.batch_eval, valid_file, user_record_file, item_record_file,
-                                 args.device)
+        # valid_loss = valid_batch(model, valid_num, args.batch_eval, valid_file, user_record_file, item_record_file,
+        #                          args.device)
+        valid_loss = new_valid_epoch(model, valid_loader, args)
         logger.info('Valid MSE - {}'.format(valid_loss))
         # logger.info('Valid Loss - {}'.format(eval_metrics['loss']))
         # logger.info('Valid Acc - {}'.format(eval_metrics['acc']))
@@ -251,13 +233,6 @@ def func_train(args, file_paths):
 
         # scheduler.step(metrics=eval_metrics['f1'])
         # scheduler.step(valid_loss)
-        # randnum = random.randint(0, 1e8)
-        # random.seed(randnum)
-        # random.shuffle(train_file['uids'])
-        # random.seed(randnum)
-        # random.shuffle(train_file['iids'])
-        # random.seed(randnum)
-        # random.shuffle(train_file['labels'])
 
     # logger.info('Max Acc - {}'.format(max_acc))
     # logger.info('Max Precision - {}'.format(max_p))
@@ -278,18 +253,18 @@ def func_train(args, file_paths):
     # f.close()
 
 
-def func_test(args, file_paths):
+def func_test(args, file_paths, gpu, ngpus_per_node):
+    torch.cuda.set_device(gpu)
     logger = logging.getLogger('Rec')
     logger.info('Loading record file...')
     user_record_file = load_pkl(file_paths.user_record_file)
     item_record_file = load_pkl(file_paths.item_record_file)
 
-    train_set = AMDataset(file_paths.train_file, user_record_file, item_record_file, logger, 'train')
-    valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, logger, 'valid')
-
-    train_num = len(train_set.labels)
-    valid_num = len(valid_set.labels)
-    logger.info('Num of train data {} valid data {}'.format(train_num, valid_num))
+    test_set = AMDataset(file_paths.test_file, user_record_file, item_record_file, logger, 'test')
+    args.batch_eval = int(args.batch_eval / ngpus_per_node)
+    test_loader = DataLoader(test_set, args.batch_eval, num_workers=4, collate_fn=my_fn)
+    test_num = len(test_set.labels)
+    logger.info('Num of test data {}'.format(test_num))
     user_num = len(user_record_file)
     args.NU = user_num
     item_num = len(item_record_file)
@@ -311,19 +286,22 @@ def func_test(args, file_paths):
     model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
                                            args.n_layer, dropout, logger).to(args.device)
     # if args.is_distributed:
-    #     model = torch.nn.parallel.DistributedDataParallel(
-    #         model, device_ids=[args.local_rank], output_device=args.local_rank,
-            # this should be removed if we update BatchNorm stats
-            # broadcast_buffers=False,
-        # )
+    # model = torch.nn.parallel.DistributedDataParallel(
+    #     model, device_ids=[args.local_rank], output_device=args.local_rank,
+        # this should be removed if we update BatchNorm stats
+        # broadcast_buffers=False)
     # model = torch.nn.DataParallel(model)
+    # optimizer = getattr(optim, args.optim)(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # model, optimizer = amp.initialize(model, optimizer, opt_level="O0")
+    model = DistributedDataParallel(model)
     model.load_state_dict(torch.load(os.path.join(args.model_dir, 'model.bin')))
 
     # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, test_num, args.batch_eval, test_file,
     #                                                         user_record_file, item_record_file, args.device,
     #                                                         'test', logger)
-    test_loss = valid_batch(model, test_num, args.batch_eval, test_file, user_record_file, item_record_file,
-                            args.device)
+    # test_loss = valid_batch(model, test_num, args.batch_eval, test_file, user_record_file, item_record_file,
+    #                         args.device)
+    test_loss = new_valid_epoch(model, test_loader, args)
     logger.info('Test MSE - {}'.format(test_loss))
     # logger.info('Test Acc - {}'.format(eval_metrics['acc']))
     # logger.info('Test Precision - {}'.format(eval_metrics['precision']))
@@ -375,15 +353,14 @@ if __name__ == '__main__':
     os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
     os.environ['CUDA_VISIBLE_DEVICES'] = '0, 1'
     # WORLD_SIZE 由torch.distributed.launch.py产生 具体数值为 nproc_per_node*node(主机数，这里为1)
-    # num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
-    # args.is_distributed = num_gpus > 1
+    num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
+    args.is_distributed = num_gpus > 1
     torch.manual_seed(args.seed)
     if torch.cuda.is_available() and args.gpu > -1:
         args.device = torch.device('cuda')
-        torch.cuda.set_device(args.gpu)
-        # torch.cuda.set_device(args.local_rank)  # 这里设定每一个进程使用的GPU是一定的
-        # torch.distributed.init_process_group(backend="nccl", init_method="env://")
-        # synchronize()
+        # torch.cuda.set_device(args.gpu)
+        torch.distributed.init_process_group(backend="nccl", init_method="env://")
+        synchronize()
     else:
         args.device = torch.device('cpu')
 
@@ -418,6 +395,6 @@ if __name__ == '__main__':
     if args.prepare:
         run_prepare(args, file_paths)
     if args.train:
-        func_train(args, file_paths)
+        func_train(args, file_paths, args.local_rank, 2)
     if args.test:
-        func_test(args, file_paths)
+        func_test(args, file_paths, args.local_rank, 2)

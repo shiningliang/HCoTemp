@@ -1,16 +1,15 @@
-import ujson as json
 import pickle as pkl
 import numpy as np
 import logging
 import os
 import argparse
-import random
 import torch
 import torch.optim as optim
 import torch.distributed as dist
+from torch.utils.data import DataLoader
 import rec_model
 from rec_preprocess import run_prepare
-from rec_util import train_one_epoch, valid_batch, load_pkl, AMDataset, my_fn
+from rec_util import load_pkl, AMDataset, my_fn, new_train_epoch, new_valid_epoch
 from pytorch_transformers import WarmupCosineSchedule
 
 
@@ -25,7 +24,7 @@ def parse_args():
                         help='train and valid the model')
     parser.add_argument('--test', action='store_true',
                         help='evaluate the model on test set')
-    parser.add_argument('--gpu', type=int, default=0,
+    parser.add_argument('--gpu', type=int, default=-1,
                         help='specify gpu device')
     parser.add_argument('--is_distributed', type=bool, default=False,
                         help='distributed training')
@@ -40,7 +39,7 @@ def parse_args():
                                 help='learning rate')
     train_settings.add_argument('--clip', type=float, default=0.35,
                                 help='gradient clip, -1 means no clip (default: 0.35)')
-    train_settings.add_argument('--weight_decay', type=float, default=0.0005,
+    train_settings.add_argument('--weight_decay', type=float, default=0.0003,
                                 help='weight decay')
     train_settings.add_argument('--emb_dropout', type=float, default=0.5,
                                 help='dropout keep rate')
@@ -142,6 +141,10 @@ def func_train(args, file_paths):
 
     train_set = AMDataset(file_paths.train_file, user_record_file, item_record_file, logger, 'train')
     valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, logger, 'valid')
+    train_loader = DataLoader(train_set, batch_size=args.batch_train, shuffle=True, num_workers=4,
+                              collate_fn=my_fn, pin_memory=True)
+    valid_loader = DataLoader(valid_set, batch_size=args.batch_train, shuffle=False, num_workers=4,
+                              collate_fn=my_fn)
 
     train_num = len(train_set.labels)
     valid_num = len(valid_set.labels)
@@ -172,10 +175,8 @@ def func_train(args, file_paths):
             # this should be removed if we update BatchNorm stats
             # broadcast_buffers=False,
         # )
-    model = torch.nn.DataParallel(model)
-    lr = args.lr
-    optimizer = getattr(optim, args.optim)(model.parameters(), lr=lr, weight_decay=args.weight_decay)
-    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 0.5, patience=args.patience, verbose=True)
+    # model = torch.nn.DataParallel(model)
+    optimizer = getattr(optim, args.optim)(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = WarmupCosineSchedule(optimizer, args.warmup, (train_num // args.batch_train + 1) * args.epochs)
 
     # max_acc, max_p, max_r, max_f, max_sum, max_epoch = 0, 0, 0, 0, 0, 0
@@ -185,8 +186,9 @@ def func_train(args, file_paths):
     min_loss, min_epoch = 1e10, 0
     for ep in range(1, args.epochs + 1):
         logger.info('Training the model for epoch {}'.format(ep))
-        train_loss = train_one_epoch(model, optimizer, train_num, train_file, user_record_file, item_record_file, args,
-                                     logger)
+        # train_loss = train_one_epoch(model, optimizer, train_num, train_file, user_record_file, item_record_file, args,
+        #                              logger)
+        train_loss = new_train_epoch(model, optimizer, train_loader, args, logger, False)
         logger.info('Epoch {} MSE {}'.format(ep, train_loss))
         scheduler.step()
 
@@ -194,8 +196,9 @@ def func_train(args, file_paths):
         # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, valid_num, args.batch_eval, valid_file,
         #                                                         user_record_file, item_record_file, args.device,
         #                                                         'valid', logger)
-        valid_loss = valid_batch(model, valid_num, args.batch_eval, valid_file, user_record_file, item_record_file,
-                                 args.device)
+        # valid_loss = valid_batch(model, valid_num, args.batch_eval, valid_file, user_record_file, item_record_file,
+        #                          args.device)
+        valid_loss = new_valid_epoch(model, valid_loader, args)
         logger.info('Valid MSE - {}'.format(valid_loss))
         # logger.info('Valid Loss - {}'.format(eval_metrics['loss']))
         # logger.info('Valid Acc - {}'.format(eval_metrics['acc']))
@@ -222,13 +225,6 @@ def func_train(args, file_paths):
 
         # scheduler.step(metrics=eval_metrics['f1'])
         # scheduler.step(valid_loss)
-        # randnum = random.randint(0, 1e8)
-        # random.seed(randnum)
-        # random.shuffle(train_file['uids'])
-        # random.seed(randnum)
-        # random.shuffle(train_file['iids'])
-        # random.seed(randnum)
-        # random.shuffle(train_file['labels'])
 
     # logger.info('Max Acc - {}'.format(max_acc))
     # logger.info('Max Precision - {}'.format(max_p))
@@ -252,21 +248,17 @@ def func_train(args, file_paths):
 def func_test(args, file_paths):
     logger = logging.getLogger('Rec')
     logger.info('Loading test file...')
-    with open(file_paths.test_file, 'rb') as fh:
-        test_file = pkl.load(fh)
-    fh.close()
-    logger.info('Loading record file...')
-    with open(file_paths.user_record_file, 'rb') as fh:
-        user_record_file = pkl.load(fh)
-    fh.close()
-    with open(file_paths.item_record_file, 'rb') as fh:
-        item_record_file = pkl.load(fh)
-    fh.close()
+    user_record_file = load_pkl(file_paths.user_record_file)
+    item_record_file = load_pkl(file_paths.item_record_file)
+    test_set = AMDataset(file_paths.test_file, user_record_file, item_record_file, logger, 'test')
+    test_loader = DataLoader(test_set, args.batch_eval, num_workers=4, collate_fn=my_fn)
 
-    test_num = len(test_file['labels'])
+    test_num = len(test_set.labels)
     logger.info('Num of test data {}'.format(test_num))
     user_num = len(user_record_file)
+    args.NU = user_num
     item_num = len(item_record_file)
+    args.NI = item_num
     logger.info('Num of users {} items {}'.format(user_num, item_num))
 
     logger.info('Initialize the model...')
@@ -289,14 +281,15 @@ def func_test(args, file_paths):
             # this should be removed if we update BatchNorm stats
             # broadcast_buffers=False,
         # )
-    model = torch.nn.DataParallel(model)
+    # model = torch.nn.DataParallel(model)
     model.load_state_dict(torch.load(os.path.join(args.model_dir, 'model.bin')))
 
     # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, test_num, args.batch_eval, test_file,
     #                                                         user_record_file, item_record_file, args.device,
     #                                                         'test', logger)
-    test_loss = valid_batch(model, test_num, args.batch_eval, test_file, user_record_file, item_record_file,
-                            args.device)
+    # test_loss = valid_batch(model, test_num, args.batch_eval, test_file, user_record_file, item_record_file,
+    #                         args.device)
+    test_loss = new_valid_epoch(model, test_loader, args)
     logger.info('Test MSE - {}'.format(test_loss))
     # logger.info('Test Acc - {}'.format(eval_metrics['acc']))
     # logger.info('Test Precision - {}'.format(eval_metrics['precision']))
@@ -320,21 +313,6 @@ def func_test(args, file_paths):
     # f.close()
 
 
-def synchronize():
-    """
-    Helper function to synchronize (barrier) among all processes when
-    using distributed training
-    """
-    if not dist.is_available():
-        return
-    if not dist.is_initialized():
-        return
-    world_size = dist.get_world_size()
-    if world_size == 1:
-        return
-    dist.barrier()
-
-
 if __name__ == '__main__':
     args = parse_args()
 
@@ -351,7 +329,7 @@ if __name__ == '__main__':
     # num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
     # args.is_distributed = num_gpus > 1
     torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and args.gpu > -1:
         args.device = torch.device('cuda')
         torch.cuda.set_device(args.gpu)
         # torch.cuda.set_device(args.local_rank)  # 这里设定每一个进程使用的GPU是一定的
