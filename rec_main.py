@@ -56,16 +56,16 @@ def parse_args():
     train_settings.add_argument('--warmup', type=float, default=0.5)
     train_settings.add_argument('--patience', type=int, default=2,
                                 help='num of epochs for train patients')
-    train_settings.add_argument('--period', type=int, default=50,
+    train_settings.add_argument('--loss_batch', type=int, default=50,
                                 help='period to save batch loss')
     train_settings.add_argument('--num_threads', type=int, default=8,
                                 help='Number of threads in input pipeline')
 
     model_settings = parser.add_argument_group('model settings')
-    model_settings.add_argument('--T', type=int, default=36,
+    model_settings.add_argument('--P', type=int, default=4,
                                 help='length of feature period')
-    model_settings.add_argument('--max_len', type=int, default=40,
-                                help='length of the year sequence')
+    model_settings.add_argument('--T', type=int, default=36,
+                                help='length of the month sequence')
     model_settings.add_argument('--NU', type=int, default=49506,
                                 help='num of users')
     model_settings.add_argument('--NI', type=int, default=21546,
@@ -100,6 +100,8 @@ def parse_args():
                                 help='top-K max pooling')
     model_settings.add_argument('--dynamic', action='store_true',
                                 help='if use dynamic embedding')
+    model_settings.add_argument('--period', action='store_true',
+                                help='if use period embedding')
 
     path_settings = parser.add_argument_group('path settings')
     path_settings.add_argument('--task', default='AM_Office',
@@ -138,9 +140,13 @@ def func_train(args, file_paths):
     logger.info('Loading record file...')
     user_record_file = load_pkl(file_paths.user_record_file)
     item_record_file = load_pkl(file_paths.item_record_file)
+    user_length_file = load_pkl(file_paths.user_length_file)
+    item_length_file = load_pkl(file_paths.item_length_file)
 
-    train_set = AMDataset(file_paths.train_file, user_record_file, item_record_file, logger, 'train')
-    valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, logger, 'valid')
+    train_set = AMDataset(file_paths.train_file, user_record_file, item_record_file, user_length_file, item_length_file,
+                          logger, 'train')
+    valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, user_length_file, item_length_file,
+                          logger, 'valid')
     train_loader = DataLoader(train_set, batch_size=args.batch_train, shuffle=True, num_workers=4,
                               collate_fn=my_fn, pin_memory=True)
     valid_loader = DataLoader(valid_set, batch_size=args.batch_train, shuffle=False, num_workers=4,
@@ -250,7 +256,10 @@ def func_test(args, file_paths):
     logger.info('Loading test file...')
     user_record_file = load_pkl(file_paths.user_record_file)
     item_record_file = load_pkl(file_paths.item_record_file)
-    test_set = AMDataset(file_paths.test_file, user_record_file, item_record_file, logger, 'test')
+    user_length_file = load_pkl(file_paths.user_length_file)
+    item_length_file = load_pkl(file_paths.item_length_file)
+    test_set = AMDataset(file_paths.test_file, user_record_file, item_record_file, user_length_file, item_length_file,
+                         logger, 'test')
     test_loader = DataLoader(test_set, args.batch_eval, num_workers=4, collate_fn=my_fn)
 
     test_num = len(test_set.labels)
@@ -362,6 +371,8 @@ if __name__ == '__main__':
             self.test_file = os.path.join(args.processed_dir, 'test.pkl')
             self.user_record_file = os.path.join(args.processed_dir, 'user_record.pkl')
             self.item_record_file = os.path.join(args.processed_dir, 'item_record.pkl')
+            self.user_length_file = os.path.join(args.processed_dir, 'user_length.pkl')
+            self.item_length_file = os.path.join(args.processed_dir, 'item_length.pkl')
 
 
     logger.info('Running with args : {}'.format(args))

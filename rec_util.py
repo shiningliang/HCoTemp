@@ -70,8 +70,9 @@ def train_one_epoch(model, optimizer, train_num, train_file, user_records, item_
         optimizer.step()
         n_batch_loss += loss.item()
         bidx = batch_idx + 1
-        if bidx % args.period == 0:
-            logger.info('AvgLoss batch [{} {}] - {}'.format(bidx - args.period + 1, bidx, n_batch_loss / args.period))
+        if bidx % args.loss_batch == 0:
+            logger.info(
+                'AvgLoss batch [{} {}] - {}'.format(bidx - args.loss_batch + 1, bidx, n_batch_loss / args.loss_batch))
             n_batch_loss = 0
         train_loss.append(loss.item())
 
@@ -139,8 +140,14 @@ def load_pkl(path):
     return data
 
 
+def dump_pkl(path, obj):
+    with open(path, 'wb') as f:
+        pkl.dump(obj, f)
+    f.close()
+
+
 class AMDataset(Dataset):
-    def __init__(self, data_path, user_rec, item_rec, logger, data_type):
+    def __init__(self, data_path, user_rec, item_rec, user_length, item_length, logger, data_type):
         logger.info('Loading {} file'.format(data_type))
         raw_data = load_pkl(data_path)
         self.uids = np.asarray(raw_data['uids'], dtype=np.int64)
@@ -148,6 +155,8 @@ class AMDataset(Dataset):
         self.labels = np.asarray(raw_data['labels'], np.float32)
         self.user_records = user_rec
         self.item_records = item_rec
+        self.user_lengths = user_length
+        self.item_lengths = item_length
         del raw_data
 
     def __getitem__(self, index):
@@ -156,14 +165,15 @@ class AMDataset(Dataset):
         iid = self.iids[index][0]
         irec = self.item_records[iid - 1][str(iid)]
 
-        return self.uids[index], self.iids[index], urec, irec, self.labels[index]
+        return self.uids[index], self.iids[index], urec, irec, self.user_lengths[uid - 1], self.item_lengths[iid - 1], \
+               self.labels[index]
 
     def __len__(self):
         return len(self.labels)
 
 
 def my_fn(batch):
-    uids, iids, u_records, i_records, labels = zip(*batch)
+    uids, iids, u_records, i_records, u_lengths, i_lengths, labels = zip(*batch)
     u_maxlen, i_maxlen = 0, 0
     for urec, irec in zip(u_records, i_records):
         tmp_len = max((len(r) for r in urec))
@@ -177,7 +187,8 @@ def my_fn(batch):
     i_records = np.asarray(i_records, dtype=np.int64)
 
     return torch.from_numpy(u_records), torch.from_numpy(i_records), torch.from_numpy(np.asarray(uids)), \
-           torch.from_numpy(np.asarray(iids)), torch.from_numpy(np.asarray(labels))
+           torch.from_numpy(np.asarray(iids)), torch.from_numpy(np.asarray(u_lengths)), \
+           torch.from_numpy(np.asarray(i_lengths)), torch.from_numpy(np.asarray(labels))
 
 
 def new_train_epoch(model, optimizer, loader, args, logger, is_dist=True):
@@ -185,14 +196,16 @@ def new_train_epoch(model, optimizer, loader, args, logger, is_dist=True):
     train_loss = []
     n_batch_loss = 0
     for batch_idx, batch in enumerate(loader):
-        b_user_records, b_item_records, b_uids, b_iids, b_labels = batch
+        b_user_records, b_item_records, b_uids, b_iids, b_ulens, b_ilens, b_labels = batch
         b_user_records = b_user_records.to(args.device)
         b_item_records = b_item_records.to(args.device)
         b_uids = b_uids.to(args.device)
         b_iids = b_iids.to(args.device)
+        b_ulens = b_ulens.to(args.device)
+        b_ilens = b_ilens.to(args.device)
         b_labels = b_labels.to(args.device)
         optimizer.zero_grad()
-        outputs = model(b_user_records, b_item_records, b_uids, b_iids)
+        outputs = model(b_user_records, b_item_records, b_uids, b_iids, b_ulens, b_ilens)
         criterion = torch.nn.MSELoss()
         loss = criterion(outputs, b_labels.reshape(b_labels.shape[0], 1))
         if is_dist:
@@ -205,9 +218,9 @@ def new_train_epoch(model, optimizer, loader, args, logger, is_dist=True):
         optimizer.step()
         n_batch_loss += loss.item()
         bidx = batch_idx + 1
-        if bidx % args.period == 0:
+        if bidx % args.loss_batch == 0:
             logger.info(
-                'AvgLoss batch [{} {}] - {}'.format(bidx - args.period + 1, bidx, n_batch_loss / args.period))
+                'AvgLoss batch [{} {}] - {}'.format(bidx - args.loss_batch + 1, bidx, n_batch_loss / args.loss_batch))
             n_batch_loss = 0
         train_loss.append(loss.item())
 
@@ -218,13 +231,15 @@ def new_valid_epoch(model, loader, args):
     valid_loss = []
     model.eval()
     for batch_idx, batch in enumerate(loader):
-        b_user_records, b_item_records, b_uids, b_iids, b_labels = batch
+        b_user_records, b_item_records, b_uids, b_iids, b_ulens, b_ilens, b_labels = batch
         b_user_records = b_user_records.to(args.device)
         b_item_records = b_item_records.to(args.device)
         b_uids = b_uids.to(args.device)
         b_iids = b_iids.to(args.device)
+        b_ulens = b_ulens.to(args.device)
+        b_ilens = b_ilens.to(args.device)
         b_labels = b_labels.to(args.device)
-        outputs = model(b_user_records, b_item_records, b_uids, b_iids)
+        outputs = model(b_user_records, b_item_records, b_uids, b_iids, b_ulens, b_ilens)
         criterion = torch.nn.MSELoss()
         loss = criterion(outputs, b_labels.reshape(b_labels.shape[0], 1))
         valid_loss.append(loss.item())
