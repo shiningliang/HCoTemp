@@ -63,12 +63,14 @@ def parse_args():
     train_settings.add_argument('--warmup', type=float, default=0.5)
     train_settings.add_argument('--patience', type=int, default=2,
                                 help='num of epochs for train patients')
-    train_settings.add_argument('--period', type=int, default=50,
+    train_settings.add_argument('--loss_batch', type=int, default=50,
                                 help='period to save batch loss')
     train_settings.add_argument('--num_threads', type=int, default=8,
                                 help='Number of threads in input pipeline')
 
     model_settings = parser.add_argument_group('model settings')
+    model_settings.add_argument('--P', type=int, default=4,
+                                help='length of feature period')
     model_settings.add_argument('--T', type=int, default=36,
                                 help='length of the year sequence')
     model_settings.add_argument('--NU', type=int, default=26889,
@@ -105,6 +107,8 @@ def parse_args():
                                 help='top-K max pooling')
     model_settings.add_argument('--dynamic', action='store_true',
                                 help='if use dynamic embedding')
+    model_settings.add_argument('--period', action='store_true',
+                                help='if use period embedding')
 
     path_settings = parser.add_argument_group('path settings')
     path_settings.add_argument('--task', default='AM_Office',
@@ -144,9 +148,13 @@ def func_train(args, file_paths, gpu, ngpus_per_node):
     logger.info('Loading record file...')
     user_record_file = load_pkl(file_paths.user_record_file)
     item_record_file = load_pkl(file_paths.item_record_file)
+    user_length_file = load_pkl(file_paths.user_length_file)
+    item_length_file = load_pkl(file_paths.item_length_file)
 
-    train_set = AMDataset(file_paths.train_file, user_record_file, item_record_file, logger, 'train')
-    valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, logger, 'valid')
+    train_set = AMDataset(file_paths.train_file, user_record_file, item_record_file, user_length_file, item_length_file,
+                          logger, 'train')
+    valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, user_length_file, item_length_file,
+                          logger, 'valid')
     args.batch_train = int(args.batch_train / ngpus_per_node)
     train_sampler = DistributedSampler(train_set)
     train_loader = DataLoader(train_set, batch_size=args.batch_train, shuffle=(train_sampler is None), num_workers=4,
@@ -164,16 +172,19 @@ def func_train(args, file_paths, gpu, ngpus_per_node):
     logger.info('Initialize the model...')
     if args.dynamic:
         UEM = np.random.normal(0., 0.01, (args.T * args.NU + 1, args.NF))
-        UEM[0] = 0.
         IEM = np.random.normal(0., 0.01, (args.T * args.NI + 1, args.NF))
-        IEM[0] = 0.
+    elif args.period:
+        UEM = np.random.normal(0., 0.01, (args.P * args.NU + 1, args.NF))
+        IEM = np.random.normal(0., 0.01, (args.P * args.NI + 1, args.NF))
     else:
         UEM = np.random.normal(0., 0.01, (args.NU + 1, args.NF))
-        UEM[0] = 0.
         IEM = np.random.normal(0., 0.01, (args.NI + 1, args.NF))
-        IEM[0] = 0.
+
+    UEM[0] = 0.
+    IEM[0] = 0.
     dropout = {'emb': args.emb_dropout, 'layer': args.layer_dropout}
-    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
+    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.P, args.NU, args.NI, args.NF,
+                                           args.n_class, args.n_hidden,
                                            args.n_layer, dropout, logger).to(args.device)
     # if args.is_distributed:
     # model = torch.nn.parallel.DistributedDataParallel(
@@ -259,8 +270,11 @@ def func_test(args, file_paths, gpu, ngpus_per_node):
     logger.info('Loading record file...')
     user_record_file = load_pkl(file_paths.user_record_file)
     item_record_file = load_pkl(file_paths.item_record_file)
+    user_length_file = load_pkl(file_paths.user_length_file)
+    item_length_file = load_pkl(file_paths.item_length_file)
 
-    test_set = AMDataset(file_paths.test_file, user_record_file, item_record_file, logger, 'test')
+    test_set = AMDataset(file_paths.test_file, user_record_file, item_record_file, user_length_file, item_length_file,
+                         logger, 'test')
     args.batch_eval = int(args.batch_eval / ngpus_per_node)
     test_loader = DataLoader(test_set, args.batch_eval, num_workers=4, collate_fn=my_fn)
     test_num = len(test_set.labels)
@@ -274,16 +288,19 @@ def func_test(args, file_paths, gpu, ngpus_per_node):
     logger.info('Initialize the model...')
     if args.dynamic:
         UEM = np.random.normal(0., 0.01, (args.T * args.NU + 1, args.NF))
-        UEM[0] = 0.
         IEM = np.random.normal(0., 0.01, (args.T * args.NI + 1, args.NF))
-        IEM[0] = 0.
+    elif args.period:
+        UEM = np.random.normal(0., 0.01, (args.P * args.NU + 1, args.NF))
+        IEM = np.random.normal(0., 0.01, (args.P * args.NI + 1, args.NF))
     else:
         UEM = np.random.normal(0., 0.01, (args.NU + 1, args.NF))
-        UEM[0] = 0.
         IEM = np.random.normal(0., 0.01, (args.NI + 1, args.NF))
-        IEM[0] = 0.
+
+    UEM[0] = 0.
+    IEM[0] = 0.
     dropout = {'emb': args.emb_dropout, 'layer': args.layer_dropout}
-    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
+    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.P, args.NU, args.NI, args.NF,
+                                           args.n_class, args.n_hidden,
                                            args.n_layer, dropout, logger).to(args.device)
     # if args.is_distributed:
     # model = torch.nn.parallel.DistributedDataParallel(
@@ -294,6 +311,7 @@ def func_test(args, file_paths, gpu, ngpus_per_node):
     # optimizer = getattr(optim, args.optim)(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     # model, optimizer = amp.initialize(model, optimizer, opt_level="O0")
     model = DistributedDataParallel(model)
+    logger.info(args.model_dir)
     model.load_state_dict(torch.load(os.path.join(args.model_dir, 'model.bin')))
 
     # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, test_num, args.batch_eval, test_file,
@@ -368,6 +386,8 @@ if __name__ == '__main__':
     args.raw_dir = os.path.join(args.raw_dir, args.task)
     if args.dynamic:
         args.task = args.task + '_dynamic'
+    elif args.period:
+        args.task = args.task + '_period'
     else:
         args.task = args.task + '_static'
     args.processed_dir = os.path.join(args.processed_dir, args.task)
@@ -388,6 +408,8 @@ if __name__ == '__main__':
             self.test_file = os.path.join(args.processed_dir, 'test.pkl')
             self.user_record_file = os.path.join(args.processed_dir, 'user_record.pkl')
             self.item_record_file = os.path.join(args.processed_dir, 'item_record.pkl')
+            self.user_length_file = os.path.join(args.processed_dir, 'user_length.pkl')
+            self.item_length_file = os.path.join(args.processed_dir, 'item_length.pkl')
 
 
     logger.info('Running with args : {}'.format(args))

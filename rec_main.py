@@ -104,7 +104,7 @@ def parse_args():
                                 help='if use period embedding')
 
     path_settings = parser.add_argument_group('path settings')
-    path_settings.add_argument('--task', default='AM_Office',
+    path_settings.add_argument('--task', default='AM_CD',
                                help='the task name')
     path_settings.add_argument('--model', default='Dynamic_COTEMP',
                                help='the model name')
@@ -147,9 +147,9 @@ def func_train(args, file_paths):
                           logger, 'train')
     valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, user_length_file, item_length_file,
                           logger, 'valid')
-    train_loader = DataLoader(train_set, batch_size=args.batch_train, shuffle=True, num_workers=4,
+    train_loader = DataLoader(train_set, batch_size=args.batch_train, shuffle=True,
                               collate_fn=my_fn, pin_memory=True)
-    valid_loader = DataLoader(valid_set, batch_size=args.batch_train, shuffle=False, num_workers=4,
+    valid_loader = DataLoader(valid_set, batch_size=args.batch_train, shuffle=False,
                               collate_fn=my_fn)
 
     train_num = len(train_set.labels)
@@ -164,16 +164,19 @@ def func_train(args, file_paths):
     logger.info('Initialize the model...')
     if args.dynamic:
         UEM = np.random.normal(0., 0.01, (args.T * args.NU + 1, args.NF))
-        UEM[0] = 0.
         IEM = np.random.normal(0., 0.01, (args.T * args.NI + 1, args.NF))
-        IEM[0] = 0.
+    elif args.period:
+        UEM = np.random.normal(0., 0.01, (args.P * args.NU + 1, args.NF))
+        IEM = np.random.normal(0., 0.01, (args.P * args.NI + 1, args.NF))
     else:
         UEM = np.random.normal(0., 0.01, (args.NU + 1, args.NF))
-        UEM[0] = 0.
         IEM = np.random.normal(0., 0.01, (args.NI + 1, args.NF))
-        IEM[0] = 0.
+
+    UEM[0] = 0.
+    IEM[0] = 0.
     dropout = {'emb': args.emb_dropout, 'layer': args.layer_dropout}
-    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
+    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.P, args.NU, args.NI, args.NF,
+                                           args.n_class, args.n_hidden,
                                            args.n_layer, dropout, logger).to(args.device)
     # if args.is_distributed:
     #     model = torch.nn.parallel.DistributedDataParallel(
@@ -282,7 +285,7 @@ def func_test(args, file_paths):
         IEM = np.random.normal(0., 0.01, (args.NI + 1, args.NF))
         IEM[0] = 0.
     dropout = {'emb': args.emb_dropout, 'layer': args.layer_dropout}
-    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
+    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.P, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
                                            args.n_layer, dropout, logger).to(args.device)
     # if args.is_distributed:
     #     model = torch.nn.parallel.DistributedDataParallel(
@@ -351,6 +354,8 @@ if __name__ == '__main__':
     args.raw_dir = os.path.join(args.raw_dir, args.task)
     if args.dynamic:
         args.task = args.task + '_dynamic'
+    elif args.period:
+        args.task = args.task + '_period'
     else:
         args.task = args.task + '_static'
     args.processed_dir = os.path.join(args.processed_dir, args.task)
