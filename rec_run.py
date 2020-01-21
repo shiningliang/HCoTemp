@@ -183,7 +183,7 @@ def func_train(args, file_paths, gpu, ngpus_per_node):
     UEM[0] = 0.
     IEM[0] = 0.
     dropout = {'emb': args.emb_dropout, 'layer': args.layer_dropout}
-    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.P, args.NU, args.NI, args.NF,
+    model = getattr(rec_model, args.model)(UEM, IEM, args.state, args.T, args.P, args.NU, args.NI, args.NF,
                                            args.n_class, args.n_hidden,
                                            args.n_layer, dropout, logger).to(args.device)
     # if args.is_distributed:
@@ -299,7 +299,7 @@ def func_test(args, file_paths, gpu, ngpus_per_node):
     UEM[0] = 0.
     IEM[0] = 0.
     dropout = {'emb': args.emb_dropout, 'layer': args.layer_dropout}
-    model = getattr(rec_model, args.model)(UEM, IEM, args.T, args.P, args.NU, args.NI, args.NF,
+    model = getattr(rec_model, args.model)(UEM, IEM, args.state, args.T, args.P, args.NU, args.NI, args.NF,
                                            args.n_class, args.n_hidden,
                                            args.n_layer, dropout, logger).to(args.device)
     # if args.is_distributed:
@@ -411,7 +411,11 @@ if __name__ == '__main__':
             self.user_length_file = os.path.join(args.processed_dir, 'user_length.pkl')
             self.item_length_file = os.path.join(args.processed_dir, 'item_length.pkl')
 
-
+    args.state = "static"
+    if args.dynamic:
+        args.state = "dynamic"
+    elif args.period:
+        args.state = "period"
     logger.info('Running with args : {}'.format(args))
     file_paths = FilePaths()
     if args.prepare:

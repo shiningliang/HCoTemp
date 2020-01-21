@@ -5,7 +5,7 @@ from time import time
 
 
 class Dynamic_COTEMP(nn.Module):
-    def __init__(self, u_emb, i_emb, T, P, NU, NI, NF, output_size, n_hidden, n_layer, dropout, logger):
+    def __init__(self, u_emb, i_emb, state, T, P, NU, NI, NF, output_size, n_hidden, n_layer, dropout, logger):
         super(Dynamic_COTEMP, self).__init__()
         start_t = time()
 
@@ -16,8 +16,12 @@ class Dynamic_COTEMP(nn.Module):
         self.n_emb = NF
         self.gru_hidden = n_hidden
         self.n_layer = n_layer
-        self.user_embedding = nn.Embedding(self.n_user * self.P + 1, self.n_emb, padding_idx=0)
-        self.item_embedding = nn.Embedding(self.n_item * self.P + 1, self.n_emb, padding_idx=0)
+        if state == "dynamic":
+            self.user_embedding = nn.Embedding(self.n_user * self.T + 1, self.n_emb, padding_idx=0)
+            self.item_embedding = nn.Embedding(self.n_item * self.T + 1, self.n_emb, padding_idx=0)
+        elif state == "period":
+            self.user_embedding = nn.Embedding(self.n_user * self.P + 1, self.n_emb, padding_idx=0)
+            self.item_embedding = nn.Embedding(self.n_item * self.P + 1, self.n_emb, padding_idx=0)
 
         self.emb_dropout = nn.Dropout(dropout['emb'])
         self.user_encoder = nn.GRU(2 * self.n_emb, n_hidden, n_layer, dropout=dropout['layer'], batch_first=True,
@@ -91,7 +95,7 @@ class Dynamic_COTEMP(nn.Module):
 
 
 class Dynamic_ID(nn.Module):
-    def __init__(self, u_emb, i_emb, T, P, NU, NI, NF, output_size, n_hidden, n_layer, dropout, logger):
+    def __init__(self, u_emb, i_emb, state, T, P, NU, NI, NF, output_size, n_hidden, n_layer, dropout, logger):
         super(Dynamic_ID, self).__init__()
         start_t = time()
 
@@ -102,8 +106,12 @@ class Dynamic_ID(nn.Module):
         self.n_emb = NF
         self.gru_hidden = n_hidden
         self.n_layer = n_layer
-        self.user_embedding = nn.Embedding(self.n_user * self.P + 1, self.n_emb, padding_idx=0)
-        self.item_embedding = nn.Embedding(self.n_item * self.P + 1, self.n_emb, padding_idx=0)
+        if state == "dynamic":
+            self.user_embedding = nn.Embedding(self.n_user * self.T + 1, self.n_emb, padding_idx=0)
+            self.item_embedding = nn.Embedding(self.n_item * self.T + 1, self.n_emb, padding_idx=0)
+        elif state == "period":
+            self.user_embedding = nn.Embedding(self.n_user * self.P + 1, self.n_emb, padding_idx=0)
+            self.item_embedding = nn.Embedding(self.n_item * self.P + 1, self.n_emb, padding_idx=0)
 
         self.emb_dropout = nn.Dropout(dropout['emb'])
         self.user_encoder = nn.GRU(self.n_emb, n_hidden, n_layer, dropout=dropout['layer'], batch_first=True,
@@ -217,7 +225,7 @@ class Dynamic_CO(nn.Module):
 
 
 class Static_COTEMP(nn.Module):
-    def __init__(self, u_emb, i_emb, T, P, NU, NI, NF, output_size, n_hidden, n_layer, dropout, logger):
+    def __init__(self, u_emb, i_emb, state, T, P, NU, NI, NF, output_size, n_hidden, n_layer, dropout, logger):
         super(Static_COTEMP, self).__init__()
         start_t = time()
 
@@ -319,7 +327,7 @@ class Static_COTEMP(nn.Module):
 
 
 class Static_ID(nn.Module):
-    def __init__(self, u_emb, i_emb, T, P, NU, NI, NF, output_size, n_hidden, n_layer, dropout, logger):
+    def __init__(self, u_emb, i_emb, state, T, P, NU, NI, NF, output_size, n_hidden, n_layer, dropout, logger):
         super(Static_ID, self).__init__()
         start_t = time()
 
