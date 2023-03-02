@@ -38,7 +38,7 @@ nohup python -m torch.distributed.launch --nproc_per_node=2 rec_run.py --model S
 ### HCoTemp
 (Below is for Period, others are similar)
 
-nohup python rec_run_hg_v2.py --train --test --period --P 6 --lr 0.0001 --epochs 3 --han_out_size 64 >train_games_hgdc_p6_b32n1lr1e-4wd3e-4ep3.txt 2>&1 &
+nohup python rec_run_hg.py --train --test --period --P 6 --lr 0.0001 --epochs 3 --han_out_size 64 >train_games_hgdc_p6_b32n1lr1e-4wd3e-4ep3.txt 2>&1 &
 
 ## Requirements
 pytorch-transformers=1.2
