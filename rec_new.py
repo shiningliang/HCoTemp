@@ -1,16 +1,37 @@
+import ujson as json
 import pickle as pkl
 import numpy as np
 import logging
 import os
 import argparse
+import random
 import torch
 import torch.optim as optim
-import torch.distributed as dist
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+import torch.distributed as dist
 import rec_model
 from rec_preprocess import run_prepare
-from rec_util import load_pkl, AMDataset, my_fn, new_train_epoch, new_valid_epoch
+from rec_util import new_train_epoch, new_valid_epoch, load_pkl, AMDataset, my_fn
 from pytorch_transformers import WarmupCosineSchedule
+
+# from apex import amp
+# from apex.parallel import DistributedDataParallel
+
+try:
+    from apex import amp
+
+    _has_apex = True
+except ImportError:
+    _has_apex = False
+
+
+def is_apex_available():
+    return _has_apex
+
+
+os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0, 1'
 
 
 def parse_args():
@@ -24,11 +45,14 @@ def parse_args():
                         help='train and valid the model')
     parser.add_argument('--test', action='store_true',
                         help='evaluate the model on test set')
-    parser.add_argument('--gpu', type=int, default=-1,
+    parser.add_argument('--gpu', type=int, default=0,
                         help='specify gpu device')
     parser.add_argument('--is_distributed', type=bool, default=False,
                         help='distributed training')
-    parser.add_argument('--local_rank', type=int, default=0)
+    parser.add_argument('--fp16', type=bool, default=False,
+                        help='Whether to use 16-bit (mixed) precision (through NVIDIA apex) instead of 32-bit')
+    parser.add_argument('--fp16_opt_level', type=str, default="O1",
+                        help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3'].")
     parser.add_argument('--seed', type=int, default=23333,
                         help='random seed (default: 23333)')
 
@@ -56,19 +80,21 @@ def parse_args():
     train_settings.add_argument('--warmup', type=float, default=0.5)
     train_settings.add_argument('--patience', type=int, default=2,
                                 help='num of epochs for train patients')
-    train_settings.add_argument('--loss_batch', type=int, default=50,
+    train_settings.add_argument('--loss_batch', type=int, default=2000,
                                 help='period to save batch loss')
     train_settings.add_argument('--num_threads', type=int, default=8,
                                 help='Number of threads in input pipeline')
+    train_settings.add_argument('--local_rank', type=int, default=-1,
+                                help='train batch size')
 
     model_settings = parser.add_argument_group('model settings')
     model_settings.add_argument('--P', type=int, default=4,
                                 help='length of feature period')
     model_settings.add_argument('--T', type=int, default=36,
-                                help='length of the month sequence')
-    model_settings.add_argument('--NU', type=int, default=49506,
+                                help='length of the year sequence')
+    model_settings.add_argument('--NU', type=int, default=26889,
                                 help='num of users')
-    model_settings.add_argument('--NI', type=int, default=21546,
+    model_settings.add_argument('--NI', type=int, default=14020,
                                 help='num of items')
     model_settings.add_argument('--NF', type=int, default=128,
                                 help='num of factors')
@@ -104,7 +130,7 @@ def parse_args():
                                 help='if use period embedding')
 
     path_settings = parser.add_argument_group('path settings')
-    path_settings.add_argument('--task', default='AM_CD',
+    path_settings.add_argument('--task', default='AM_Office',
                                help='the task name')
     path_settings.add_argument('--model', default='Dynamic_COTEMP',
                                help='the model name')
@@ -135,9 +161,11 @@ def parse_args():
     return parser.parse_args()
 
 
-def func_train(args, file_paths):
+def func_train(args, file_paths, gpu, ngpus_per_node):
+    torch.cuda.set_device(gpu)
     logger = logging.getLogger('Rec')
-    logger.info('Loading record file...')
+    if args.local_rank in [-1, 0]:
+        logger.info('Loading record file...')
     user_record_file = load_pkl(file_paths.user_record_file)
     item_record_file = load_pkl(file_paths.item_record_file)
     user_length_file = load_pkl(file_paths.user_length_file)
@@ -147,19 +175,21 @@ def func_train(args, file_paths):
                           logger, 'train')
     valid_set = AMDataset(file_paths.valid_file, user_record_file, item_record_file, user_length_file, item_length_file,
                           logger, 'valid')
-    train_loader = DataLoader(train_set, batch_size=args.batch_train, shuffle=True,
-                              collate_fn=my_fn, pin_memory=True)
-    valid_loader = DataLoader(valid_set, batch_size=args.batch_train, shuffle=False,
-                              collate_fn=my_fn)
-
+    args.batch_train = int(args.batch_train / ngpus_per_node)
+    train_sampler = DistributedSampler(train_set)
+    train_loader = DataLoader(train_set, batch_size=args.batch_train, shuffle=(train_sampler is None), num_workers=4,
+                              collate_fn=my_fn, sampler=train_sampler)
+    valid_loader = DataLoader(valid_set, batch_size=args.batch_train, shuffle=False, num_workers=4, collate_fn=my_fn)
     train_num = len(train_set.labels)
     valid_num = len(valid_set.labels)
-    logger.info('Num of train data {} valid data {}'.format(train_num, valid_num))
+
     user_num = len(user_record_file)
     args.NU = user_num
     item_num = len(item_record_file)
     args.NI = item_num
-    logger.info('Num of users {} items {}'.format(user_num, item_num))
+    if args.local_rank in [-1, 0]:
+        logger.info('Num of train data {} valid data {}'.format(train_num, valid_num))
+        logger.info('Num of users {} items {}'.format(user_num, item_num))
 
     logger.info('Initialize the model...')
     if args.dynamic:
@@ -178,14 +208,25 @@ def func_train(args, file_paths):
     model = getattr(rec_model, args.model)(UEM, IEM, args.state, args.T, args.P, args.NU, args.NI, args.NF,
                                            args.n_class, args.n_hidden,
                                            args.n_layer, dropout, logger).to(args.device)
-    # if args.is_distributed:
-    #     model = torch.nn.parallel.DistributedDataParallel(
-    #         model, device_ids=[args.local_rank], output_device=args.local_rank,
-            # this should be removed if we update BatchNorm stats
-            # broadcast_buffers=False,
-        # )
-    # model = torch.nn.DataParallel(model)
     optimizer = getattr(optim, args.optim)(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    if args.fp16:
+        if not is_apex_available():
+            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
+        model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level)
+    # model, optimizer = amp.initialize(model, optimizer, opt_level="O0")
+    # model = DistributedDataParallel(model)
+    if args.gpu > 1:
+        model = torch.nn.DataParallel(model)
+    if args.local_rank != -1:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[args.local_rank],
+            output_device=args.local_rank,
+            find_unused_parameters=True,
+        )
+
+    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 0.5, patience=args.patience, verbose=True)
     scheduler = WarmupCosineSchedule(optimizer, args.warmup, (train_num // args.batch_train + 1) * args.epochs)
 
     # max_acc, max_p, max_r, max_f, max_sum, max_epoch = 0, 0, 0, 0, 0, 0
@@ -194,21 +235,25 @@ def func_train(args, file_paths):
     # PRC = {}
     min_loss, min_epoch = 1e10, 0
     for ep in range(1, args.epochs + 1):
-        logger.info('Training the model for epoch {}'.format(ep))
-        # train_loss = train_one_epoch(model, optimizer, train_num, train_file, user_record_file, item_record_file, args,
-        #                              logger)
-        train_loss = new_train_epoch(model, optimizer, train_loader, args, logger, False)
-        logger.info('Epoch {} MSE {}'.format(ep, train_loss))
+        if args.local_rank in [-1, 0]:
+            logger.info('Training the model for epoch {}'.format(ep))
+        # train_loss = train_one_epoch(model, optimizer, train_num, train_file, user_record_file, item_record_file,
+        #                              args, logger)
+        train_loss = new_train_epoch(model, optimizer, train_loader, args, logger)
+        if args.local_rank in [-1, 0]:
+            logger.info('Epoch {} MSE {}'.format(ep, train_loss))
         scheduler.step()
 
-        logger.info('Evaluating the model for epoch {}'.format(ep))
+        if args.local_rank in [-1, 0]:
+            logger.info('Evaluating the model for epoch {}'.format(ep))
         # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, valid_num, args.batch_eval, valid_file,
         #                                                         user_record_file, item_record_file, args.device,
         #                                                         'valid', logger)
         # valid_loss = valid_batch(model, valid_num, args.batch_eval, valid_file, user_record_file, item_record_file,
         #                          args.device)
         valid_loss = new_valid_epoch(model, valid_loader, args)
-        logger.info('Valid MSE - {}'.format(valid_loss))
+        if args.local_rank in [-1, 0]:
+            logger.info('Valid MSE - {}'.format(valid_loss))
         # logger.info('Valid Loss - {}'.format(eval_metrics['loss']))
         # logger.info('Valid Acc - {}'.format(eval_metrics['acc']))
         # logger.info('Valid Precision - {}'.format(eval_metrics['precision']))
@@ -241,8 +286,9 @@ def func_train(args, file_paths):
     # logger.info('Max F1 - {}'.format(max_f))
     # logger.info('Max Epoch - {}'.format(max_epoch))
     # logger.info('Max Sum - {}'.format(max_sum))
-    logger.info('Min MSE - {}'.format(min_loss))
-    logger.info('Min Epoch - {}'.format(min_epoch))
+    if args.local_rank in [-1, 0]:
+        logger.info('Min MSE - {}'.format(min_loss))
+        logger.info('Min Epoch - {}'.format(min_epoch))
     # with open(os.path.join(args.result_dir, 'FALSE_valid.json'), 'w') as f:
     #     f.write(json.dumps(FALSE) + '\n')
     # f.close()
@@ -254,17 +300,19 @@ def func_train(args, file_paths):
     # f.close()
 
 
-def func_test(args, file_paths):
+def func_test(args, file_paths, gpu, ngpus_per_node):
+    torch.cuda.set_device(gpu)
     logger = logging.getLogger('Rec')
-    logger.info('Loading test file...')
+    logger.info('Loading record file...')
     user_record_file = load_pkl(file_paths.user_record_file)
     item_record_file = load_pkl(file_paths.item_record_file)
     user_length_file = load_pkl(file_paths.user_length_file)
     item_length_file = load_pkl(file_paths.item_length_file)
+
     test_set = AMDataset(file_paths.test_file, user_record_file, item_record_file, user_length_file, item_length_file,
                          logger, 'test')
+    args.batch_eval = int(args.batch_eval / ngpus_per_node)
     test_loader = DataLoader(test_set, args.batch_eval, num_workers=4, collate_fn=my_fn)
-
     test_num = len(test_set.labels)
     logger.info('Num of test data {}'.format(test_num))
     user_num = len(user_record_file)
@@ -276,24 +324,30 @@ def func_test(args, file_paths):
     logger.info('Initialize the model...')
     if args.dynamic:
         UEM = np.random.normal(0., 0.01, (args.T * args.NU + 1, args.NF))
-        UEM[0] = 0.
         IEM = np.random.normal(0., 0.01, (args.T * args.NI + 1, args.NF))
-        IEM[0] = 0.
+    elif args.period:
+        UEM = np.random.normal(0., 0.01, (args.P * args.NU + 1, args.NF))
+        IEM = np.random.normal(0., 0.01, (args.P * args.NI + 1, args.NF))
     else:
         UEM = np.random.normal(0., 0.01, (args.NU + 1, args.NF))
-        UEM[0] = 0.
         IEM = np.random.normal(0., 0.01, (args.NI + 1, args.NF))
-        IEM[0] = 0.
+
+    UEM[0] = 0.
+    IEM[0] = 0.
     dropout = {'emb': args.emb_dropout, 'layer': args.layer_dropout}
-    model = getattr(rec_model, args.model)(UEM, IEM, args.state, args.T, args.P, args.NU, args.NI, args.NF, args.n_class, args.n_hidden,
+    model = getattr(rec_model, args.model)(UEM, IEM, args.state, args.T, args.P, args.NU, args.NI, args.NF,
+                                           args.n_class, args.n_hidden,
                                            args.n_layer, dropout, logger).to(args.device)
     # if args.is_distributed:
-    #     model = torch.nn.parallel.DistributedDataParallel(
-    #         model, device_ids=[args.local_rank], output_device=args.local_rank,
-            # this should be removed if we update BatchNorm stats
-            # broadcast_buffers=False,
-        # )
+    # model = torch.nn.parallel.DistributedDataParallel(
+    #     model, device_ids=[args.local_rank], output_device=args.local_rank,
+    # this should be removed if we update BatchNorm stats
+    # broadcast_buffers=False)
     # model = torch.nn.DataParallel(model)
+    # optimizer = getattr(optim, args.optim)(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # model, optimizer = amp.initialize(model, optimizer, opt_level="O0")
+    model = DistributedDataParallel(model)
+    logger.info(args.model_dir)
     model.load_state_dict(torch.load(os.path.join(args.model_dir, 'model.bin')))
 
     # eval_metrics, fpr, tpr, precision, recall = valid_batch(model, test_num, args.batch_eval, test_file,
@@ -325,6 +379,21 @@ def func_test(args, file_paths):
     # f.close()
 
 
+def synchronize():
+    """
+    Helper function to synchronize (barrier) among all processes when
+    using distributed training
+    """
+    if not dist.is_available():
+        return
+    if not dist.is_initialized():
+        return
+    world_size = dist.get_world_size()
+    if world_size == 1:
+        return
+    dist.barrier()
+
+
 if __name__ == '__main__':
     args = parse_args()
 
@@ -336,15 +405,14 @@ if __name__ == '__main__':
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     # WORLD_SIZE 由torch.distributed.launch.py产生 具体数值为 nproc_per_node*node(主机数，这里为1)
-    # num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
-    # args.is_distributed = num_gpus > 1
+    num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
+    args.is_distributed = num_gpus > 1
     torch.manual_seed(args.seed)
     if torch.cuda.is_available() and args.gpu > -1:
         args.device = torch.device('cuda')
-        torch.cuda.set_device(args.gpu)
-        # torch.cuda.set_device(args.local_rank)  # 这里设定每一个进程使用的GPU是一定的
-        # torch.distributed.init_process_group(backend="nccl", init_method="env://")
-        # synchronize()
+        # torch.cuda.set_device(args.gpu)
+        torch.distributed.init_process_group(backend="nccl", init_method="env://")
+        synchronize()
     else:
         args.device = torch.device('cpu')
 
@@ -361,11 +429,12 @@ if __name__ == '__main__':
     args.result_dir = os.path.join(args.outputs_dir, args.task, args.model, args.result_dir)
     args.pics_dir = os.path.join(args.outputs_dir, args.task, args.model, args.pics_dir)
     args.summary_dir = os.path.join(args.outputs_dir, args.task, args.model, args.summary_dir)
-    for dir_path in [args.raw_dir, args.processed_dir, args.model_dir, args.result_dir, args.pics_dir,
-                     args.summary_dir]:
-        if not os.path.exists(dir_path):
-            os.makedirs(dir_path)
 
+
+    # for dir_path in [args.raw_dir, args.processed_dir, args.model_dir, args.result_dir, args.pics_dir,
+    #  args.summary_dir]:
+    # if not os.path.exists(dir_path):
+    # os.makedirs(dir_path)
 
     class FilePaths(object):
         def __init__(self):
@@ -388,6 +457,6 @@ if __name__ == '__main__':
     if args.prepare:
         run_prepare(args, file_paths)
     if args.train:
-        func_train(args, file_paths)
+        func_train(args, file_paths, args.local_rank, 2)
     if args.test:
-        func_test(args, file_paths)
+        func_test(args, file_paths, args.local_rank, 2)

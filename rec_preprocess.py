@@ -1,9 +1,8 @@
 import ujson as json
-import pickle as pkl
 import os
 import pandas as pd
+from tqdm import tqdm
 from rec_util import dump_pkl
-from clean_data import show_len
 
 
 class BasicParser(object):
@@ -17,13 +16,13 @@ class BasicParser(object):
         self.NI = len(self.ilines)
         self.T = T
         self.P = P
-        print(self.NU, self.NI)
+        print("Initial users {} items {}".format(self.NU, self.NI))
 
     def parse_record(self, user_out, item_out, ulen_out, ilen_out):
         urecords, urec_length = [], []
         for line in self.ulines:
             urecords.append(json.loads(line))
-        for uid, record in enumerate(urecords):
+        for uid, record in tqdm(enumerate(urecords), total=len(urecords)):
             uid = str(uid + 1)
             u_len = len(record[uid])
             if u_len == 0:
@@ -39,7 +38,7 @@ class BasicParser(object):
         irecords, irec_length = [], []
         for line in self.ilines:
             irecords.append(json.loads(line))
-        for iid, record in enumerate(irecords):
+        for iid, record in tqdm(enumerate(irecords), total=len(irecords)):
             iid = str(iid + 1)
             i_len = len(record[iid])
             if i_len == 0:
@@ -85,7 +84,7 @@ class DynamicParser(BasicParser):
         urecords, urec_length = [], []
         for line in self.ulines:
             urecords.append(json.loads(line))
-        for uid, record in enumerate(urecords):
+        for uid, record in tqdm(enumerate(urecords), total=len(urecords)):
             uid = str(uid + 1)
             u_len = len(record[uid])
             # u_raw_length.append(u_len)
@@ -98,13 +97,13 @@ class DynamicParser(BasicParser):
             for t in range(u_len):
                 # record[uid][t] 第t月与user有交互的item list
                 for idx, ut_i in enumerate(record[uid][t]):
-                    record[uid][t][idx] = t * self.NI + ut_i  # 按第t月寻找组 按id偏移
+                    record[uid][t][idx] = t * self.NI + ut_i  # 按第t月寻找组 按id偏移 方便id对应到item的第t个月的embedding
             urec_length.append(u_len)
 
         irecords, irec_length = [], []
         for line in self.ilines:
             irecords.append(json.loads(line))
-        for iid, record in enumerate(irecords):
+        for iid, record in tqdm(enumerate(irecords), total=len(irecords)):
             iid = str(iid + 1)
             i_len = len(record[iid])
             # i_raw_length.append(i_len)
@@ -128,11 +127,11 @@ class DynamicParser(BasicParser):
 class PeriodParser(BasicParser):
     def parse_record(self, user_out, item_out, ulen_out, ilen_out):
         urecords, urec_length = [], []
-        for line in self.ulines:
+        for line in self.ulines:  # each line is the records of an user, key=user_id value=records
             urecords.append(json.loads(line))
-        for uid, record in enumerate(urecords):
+        for uid, record in tqdm(enumerate(urecords), total=len(urecords)):
             uid = str(uid + 1)
-            u_len = len(record[uid])
+            u_len = len(record[uid])  # each sublist is the records in a month
             # u_raw_length.append(u_len)
             if u_len >= self.T:
                 record[uid] = record[uid][:self.T]
@@ -148,7 +147,7 @@ class PeriodParser(BasicParser):
         irecords, irec_length = [], []
         for line in self.ilines:
             irecords.append(json.loads(line))
-        for iid, record in enumerate(irecords):
+        for iid, record in tqdm(enumerate(irecords), total=len(irecords)):
             iid = str(iid + 1)
             i_len = len(record[iid])
             # i_raw_length.append(i_len)

@@ -3,14 +3,21 @@ import numpy as np
 import pickle as pkl
 import torch
 from torch.utils.data import Dataset
+import joblib
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_curve, auc, \
     precision_recall_curve
-import matplotlib.pyplot as plt
-import seaborn
-from apex import amp
 
-seaborn.set_context(context="talk")
-plt.switch_backend('agg')
+# import matplotlib.pyplot as plt
+# import seaborn
+
+try:
+    from apex import amp
+except:
+    print("Please install apex")
+
+
+# seaborn.set_context(context="talk")
+# plt.switch_backend('agg')
 
 
 def get_batch(uids, iids, labels, user_records, item_records, device):
@@ -134,7 +141,7 @@ def valid_batch(model, data_num, batch_size, valid_file, user_records, item_reco
 
 def load_pkl(path):
     with open(path, 'rb') as f:
-        data = pkl.load(f)
+        data = joblib.load(f)
     f.close()
 
     return data
@@ -142,7 +149,7 @@ def load_pkl(path):
 
 def dump_pkl(path, obj):
     with open(path, 'wb') as f:
-        pkl.dump(obj, f)
+        joblib.dump(obj, f)
     f.close()
 
 
@@ -191,7 +198,7 @@ def my_fn(batch):
            torch.from_numpy(np.asarray(i_lengths)), torch.from_numpy(np.asarray(labels))
 
 
-def new_train_epoch(model, optimizer, loader, args, logger, is_dist=True):
+def new_train_epoch(model, optimizer, loader, args, logger, scheduler=None, is_dist=True):
     model.train()
     train_loss = []
     n_batch_loss = 0
@@ -213,15 +220,63 @@ def new_train_epoch(model, optimizer, loader, args, logger, is_dist=True):
                 scaled_loss.backward()
         else:
             loss.backward()
-        if args.clip > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+        if args.clip > -1:
+            torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.clip)
+        optimizer.step()
+        if scheduler:
+            scheduler.step()
+
+        n_batch_loss += loss.item()
+        bidx = batch_idx + 1
+        # logger.info('AvgLoss batch [{}] - {}'.format(bidx, n_batch_loss / bidx))
+        if bidx % args.loss_batch == 0:
+            if args.local_rank in [-1, 0]:
+                logger.info(
+                    'AvgLoss batch [{} {}] - {}'.format(bidx - args.loss_batch + 1, bidx, n_batch_loss / args.loss_batch))
+            n_batch_loss = 0
+
+        train_loss.append(loss.item())
+
+    return np.mean(train_loss)
+
+
+def new_train_epoch_hg(model, optimizer, loader, hg, features, args, logger, is_dist=True):
+    model.train()
+    train_loss = []
+    n_batch_loss = 0
+    for batch_idx, batch in enumerate(loader):
+        b_user_records, b_item_records, b_uids, b_iids, b_ulens, b_ilens, b_labels = batch
+        b_user_records = b_user_records.to(args.device)
+        b_item_records = b_item_records.to(args.device)
+        b_uids = b_uids.to(args.device)
+        b_iids = b_iids.to(args.device)
+        b_ulens = b_ulens.to(args.device)
+        b_ilens = b_ilens.to(args.device)
+        b_labels = b_labels.to(args.device)
+        optimizer.zero_grad()
+        outputs = model(b_user_records, b_item_records, b_uids, b_iids, b_ulens, b_ilens, hg, features)
+        criterion = torch.nn.MSELoss()
+        loss = criterion(outputs, b_labels.reshape(b_labels.shape[0], 1))
+        # if is_dist:
+        #     with amp.scale_loss(loss, optimizer) as scaled_loss:
+        #         scaled_loss.backward()
+        # else:
+        #     loss.backward()
+        # if args.clip > -1:
+        #     torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.clip)
+        loss.backward()
         optimizer.step()
         n_batch_loss += loss.item()
         bidx = batch_idx + 1
+        logger.info(
+            'AvgLoss batch [{}] - {}'.format(bidx, n_batch_loss / bidx))
         if bidx % args.loss_batch == 0:
-            logger.info(
-                'AvgLoss batch [{} {}] - {}'.format(bidx - args.loss_batch + 1, bidx, n_batch_loss / args.loss_batch))
+            if args.local_rank in [-1, 0]:
+                logger.info(
+                    'AvgLoss batch [{} {}] - {}'.format(bidx - args.loss_batch + 1, bidx,
+                                                        n_batch_loss / args.loss_batch))
             n_batch_loss = 0
+
         train_loss.append(loss.item())
 
     return np.mean(train_loss)
